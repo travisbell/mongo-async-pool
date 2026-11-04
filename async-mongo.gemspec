@@ -30,5 +30,9 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.add_dependency("async", ">= 2.24", "< 3")
+  # Required by bson and mongo without being declared: bigdecimal hasn't been a
+  # default gem since Ruby 3.4, nor logger since Ruby 4.0.
+  spec.add_dependency("bigdecimal")
+  spec.add_dependency("logger")
   spec.add_dependency("mongo", ">= 2.24", "< 3")
 end
