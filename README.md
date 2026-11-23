@@ -116,6 +116,13 @@ handles in its event loop; otherwise (e.g. the driver's monitor threads) the
 stock code runs. Connection establishment still uses `IO.select`; it only
 happens when a pool opens a connection.
 
+It also makes fewer system calls per round trip than the stock code: after
+writing a request it waits for the reply rather than trying a read that would
+find nothing yet, a small reply's header and body come from one read, and reads
+and writes skip the scheduler's `io_read` / `io_write` hooks (`recv_nonblock`
+and `write_nonblock`). A query then takes one write, one read and one wait,
+rather than one write and three reads.
+
 The stock read also watches a pipe that lets the pool wake readers blocked on a
 dead server. The extension relies on closing the socket instead, which wakes a
 fiber blocked on it only on Ruby 3.5+ (`Fiber::Scheduler#fiber_interrupt`). So

@@ -21,7 +21,6 @@ module Mongo
       class ConnectionPool
         include ::Mongo::Loggable
         include ::Mongo::Monitoring::Publishable
-        extend Forwardable
 
         DEFAULT_MAX_SIZE = 20
         DEFAULT_MIN_SIZE = 0
@@ -31,16 +30,25 @@ module Mongo
         # How often the maintenance fiber wakes up when nothing signals it.
         MAINTENANCE_INTERVAL = 5
 
-        attr_reader :server, :options, :generation_manager
-
-        def_delegators :server, :address, :monitoring
-        def_delegators :generation_manager, :generation, :generation_unlocked
+        attr_reader :server, :options, :generation_manager, :address, :monitoring, :max_size, :min_size, :max_idle_time, :max_connecting
 
         def initialize(server, options = {})
           @server = server
+          @address = server.address
+          @monitoring = server.monitoring
           @raw_options = options
           @options = normalize_options(options).freeze
           @generation_manager = ::Mongo::Server::ConnectionPool::GenerationManager.new(server: server)
+
+          # The options are a BSON::Document, where every lookup allocates a String
+          # for the key, so read the ones used on every checkout once.
+          @max_size = @options[:max_size] || DEFAULT_MAX_SIZE
+          @min_size = @options[:min_size] || DEFAULT_MIN_SIZE
+          @wait_timeout = @options[:wait_timeout] || DEFAULT_WAIT_TIMEOUT
+          @max_idle_time = @options[:max_idle_time]
+          @max_connecting = @options[:max_connecting] || DEFAULT_MAX_CONNECTING
+          @monitoring_enabled = @options[:monitoring] != false
+          @populator_io = @options[:populator_io] != false
 
           @ready = false
           @closed = false
@@ -73,25 +81,17 @@ module Mongo
 
         # -- Configuration --
 
-        def max_size
-          @options[:max_size] || DEFAULT_MAX_SIZE
-        end
-
-        def min_size
-          @options[:min_size] || DEFAULT_MIN_SIZE
-        end
-
         # @parameter context [Mongo::Operation::Context | Nil] With client-side operation timeouts (timeoutMS), the time remaining.
         def wait_timeout(context = nil)
-          context&.remaining_timeout_sec || @options[:wait_timeout] || DEFAULT_WAIT_TIMEOUT
+          context&.remaining_timeout_sec || @wait_timeout
         end
 
-        def max_idle_time
-          @options[:max_idle_time]
+        def generation(service_id: nil)
+          @generation_manager.generation(service_id: service_id)
         end
 
-        def max_connecting
-          @options[:max_connecting] || DEFAULT_MAX_CONNECTING
+        def generation_unlocked(service_id: nil)
+          @generation_manager.generation_unlocked(service_id: service_id)
         end
 
         # -- State --
@@ -428,6 +428,11 @@ module Mongo
 
         private
 
+        # Overrides Publishable#monitoring?, which looks the option up on every event.
+        def monitoring?
+          @monitoring_enabled
+        end
+
         def populate_one
           return false if @closed || !@ready || @controller.size >= min_size
 
@@ -611,7 +616,7 @@ module Mongo
         def ensure_maintenance
           return if @closed || maintenance_running?
           # The driver passes this for servers it isn't connected to; like the stock pool, do no background I/O.
-          return if @options[:populator_io] == false
+          return unless @populator_io
           return unless (scheduler = Fiber.scheduler)
 
           @maintenance_stop = false

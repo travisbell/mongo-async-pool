@@ -64,6 +64,55 @@ RSpec.describe(Mongo::Async::Pool::SocketExtension) do
     end
   end
 
+  it "reads a reply that has arrived, header and body, with one read" do
+    socket = build_socket(client_io)
+    server_io.write("0123456789abcdefbody")
+    allow(client_io).to receive(:recv_nonblock).and_call_original
+
+    Sync do
+      expect(socket.read(16)).to eq("0123456789abcdef")
+      expect(socket.read(4)).to eq("body")
+    end
+
+    expect(client_io).to have_received(:recv_nonblock).once
+  end
+
+  it "waits for the reply after writing a request instead of trying to read it right away" do
+    socket = build_socket(client_io)
+    allow(client_io).to receive(:recv_nonblock).and_call_original
+
+    Sync do
+      Async do
+        server_io.read(7)
+        server_io.write("reply")
+      end
+
+      socket.write("request")
+      expect(socket.read(5)).to eq("reply")
+    end
+
+    expect(client_io).to have_received(:recv_nonblock).once
+  end
+
+  it "keeps what it read ahead for the next read, with or without a scheduler" do
+    socket = build_socket(client_io)
+    server_io.write("firstsecond")
+
+    Sync { expect(socket.read(5)).to eq("first") }
+    expect(socket.read(6)).to eq("second")
+  end
+
+  it "writes more than the socket can buffer" do
+    socket = build_socket(client_io)
+    payload = Random.bytes(1_000_000)
+
+    Sync do
+      reader = Async { server_io.read(payload.bytesize) }
+      socket.write(payload)
+      expect(reader.wait).to eq(payload)
+    end
+  end
+
   it "raises SocketTimeoutError when nothing arrives within the socket timeout" do
     socket = build_socket(client_io, timeout: 0.05)
 

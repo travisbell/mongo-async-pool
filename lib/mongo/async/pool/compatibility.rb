@@ -7,6 +7,7 @@ module Mongo
       module Compatibility
         GENERATION_MANAGER_METHODS = [:generation, :pipe_fds, :remove_pipe_fds, :bump, :close_all_pipes].freeze
         READ_FROM_SOCKET_PARAMETERS = [[:req, :length], [:key, :socket_timeout], [:key, :csot]].freeze
+        WRITE_PARAMETERS = [[:rest, :args], [:key, :timeout]].freeze
 
         class << self
           # Whether closing a socket wakes a fiber blocked waiting on it. Needs
@@ -44,7 +45,11 @@ module Mongo
               missing << "Mongo::Socket#read_from_socket"
             end
 
-            [:wait_for_socket_to_be_writable, :read_buffer_size, :allocate_string, :raise_timeout_error!].each do |method|
+            unless ::Mongo::Socket.method_defined?(:write) && ::Mongo::Socket.instance_method(:write).parameters == WRITE_PARAMETERS
+              missing << "Mongo::Socket#write(*args, timeout:)"
+            end
+
+            [:write_without_timeout, :wait_for_socket_to_be_writable, :read_buffer_size, :allocate_string, :raise_timeout_error!].each do |method|
               missing << "Mongo::Socket##{method}" unless ::Mongo::Socket.private_method_defined?(method)
             end
 

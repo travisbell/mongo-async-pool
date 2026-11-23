@@ -16,6 +16,17 @@ module Mongo
           self
         end
 
+        # The stock methods look these up in the (frozen) options, a BSON::Document
+        # where every lookup allocates a String, several times per checkout.
+        def connection_pool
+          @connection_pool ||= super
+        end
+
+        def generation
+          # @generation is only set on load-balanced connections, which the stock pool handles.
+          @generation || (@options_generation ||= super)
+        end
+
         # Why the connection can't go back into the pool after being used, as a
         # ConnectionClosed reason, or nil if it can (same rules and order as the
         # stock pool's check-in).

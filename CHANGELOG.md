@@ -7,7 +7,8 @@
     stock-pool fallback for checkouts outside the owner thread's event loop,
     and first-come-first-served waiting.
   - `Mongo::Async::Pool::SocketExtension`: socket waits through the fiber scheduler
-    instead of `Kernel.select` (which Async runs on a new thread per call).
+    instead of `Kernel.select` (which Async runs on a new thread per call), with
+    one read per small reply instead of three.
   - `Mongo::Async::Pool::SafeFinalizer`: a stock-pool finalizer that can't raise.
 - Behaves like `Mongo::Server::ConnectionPool` (events, close reasons, errors,
   clear/pause/populate/close semantics); passes all 32 official CMAP spec tests.
