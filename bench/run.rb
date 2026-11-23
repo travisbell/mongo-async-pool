@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Benchmarks the same Rack app under Puma (threads, the driver's stock pool)
-# and Falcon (fibers), with and without async-mongo, and writes a JSON + HTML
+# and Falcon (fibers), with and without mongo-async-pool, and writes a JSON + HTML
 # report. See bench/README.md.
 #
 #   bundle exec ruby bench/run.rb                       # the default suite (~50 minutes)
@@ -22,31 +22,31 @@ require "time"
 
 require_relative "app"
 require_relative "report"
-require_relative "../lib/async/mongo/version"
+require_relative "../lib/mongo/async/pool/version"
 
 module Bench
   # A server configuration, parsed from names like "puma-4x16" (4 workers × 16
-  # threads, stock pool) or "falcon-2" (2 workers, async-mongo). A "-poolN"
+  # threads, stock pool) or "falcon-2" (2 workers, mongo-async-pool). A "-poolN"
   # suffix sets the connection pool size per process (e.g. "falcon-1-pool16").
   class Server
     FAMILIES = {
-      "puma" => { label: "Puma + stock mongo", async_mongo: "0" },
-      "puma-async-mongo" => { label: "Puma + async-mongo installed", async_mongo: "1" },
-      "falcon" => { label: "Falcon + async-mongo", async_mongo: "1" },
-      "falcon-stock" => { label: "Falcon + stock mongo", async_mongo: "0" },
-      "falcon-pool-only" => { label: "Falcon + async-mongo pool only", async_mongo: "pool" },
-      "falcon-socket-only" => { label: "Falcon + async-mongo socket only", async_mongo: "socket" }
+      "puma" => { label: "Puma + stock mongo", mongo_async_pool: "0" },
+      "puma-mongo-async-pool" => { label: "Puma + mongo-async-pool installed", mongo_async_pool: "1" },
+      "falcon" => { label: "Falcon + mongo-async-pool", mongo_async_pool: "1" },
+      "falcon-stock" => { label: "Falcon + stock mongo", mongo_async_pool: "0" },
+      "falcon-pool-only" => { label: "Falcon + mongo-async-pool pool only", mongo_async_pool: "pool" },
+      "falcon-socket-only" => { label: "Falcon + mongo-async-pool socket only", mongo_async_pool: "socket" }
     }.freeze
 
     # Connections per Falcon process unless --pool-size says otherwise. Puma
     # gets one per thread.
     FALCON_POOL_SIZE = 64
 
-    PATTERN = /\A(?<family>puma(?:-async-mongo)?)-(?<workers>\d+)x(?<threads>\d+)(?:-pool(?<pool>\d+))?\z|\A(?<family>falcon(?:-stock|-pool-only|-socket-only)?)-(?<workers>\d+)(?:-pool(?<pool>\d+))?\z/
+    PATTERN = /\A(?<family>puma(?:-mongo-async-pool)?)-(?<workers>\d+)x(?<threads>\d+)(?:-pool(?<pool>\d+))?\z|\A(?<family>falcon(?:-stock|-pool-only|-socket-only)?)-(?<workers>\d+)(?:-pool(?<pool>\d+))?\z/
 
     class << self
       def parse(name, pool_size:)
-        match = PATTERN.match(name) or raise ArgumentError, "Unknown server #{name.inspect} (e.g. puma-1x16, puma-async-mongo-4x5, falcon-1, falcon-1-pool16, falcon-stock-2, falcon-pool-only-1, falcon-socket-only-1)"
+        match = PATTERN.match(name) or raise ArgumentError, "Unknown server #{name.inspect} (e.g. puma-1x16, puma-mongo-async-pool-4x5, falcon-1, falcon-1-pool16, falcon-stock-2, falcon-pool-only-1, falcon-socket-only-1)"
         pool_size = Integer(match[:pool]) if match[:pool]
         new(name, match[:family], Integer(match[:workers]), match[:threads] && Integer(match[:threads]), pool_size)
       end
@@ -79,8 +79,8 @@ module Bench
       "#{FAMILIES.fetch(@family)[:label]} (#{details.join(", ")})"
     end
 
-    def async_mongo
-      FAMILIES.fetch(@family)[:async_mongo]
+    def mongo_async_pool
+      FAMILIES.fetch(@family)[:mongo_async_pool]
     end
 
     def command(port)
@@ -112,7 +112,7 @@ module Bench
     SUITES = {
       "concurrency" => {
         title: "Fibers vs threads",
-        description: "Puma's thread pool against Falcon's fibers, with the stock MongoDB driver and with async-mongo, as the number of concurrent clients grows. " \
+        description: "Puma's thread pool against Falcon's fibers, with the stock MongoDB driver and with mongo-async-pool, as the number of concurrent clients grows. " \
           "Puma runs with 4, 8 or 16 threads and a connection per thread, as Ruby apps usually do; its concurrency is its thread count. " \
           "Falcon runs a fiber per request and has 64 connections per process; its concurrency is its connection pool.",
         servers: [
@@ -124,7 +124,7 @@ module Bench
       },
       "connections" => {
         title: "Same number of connections",
-        description: "Puma with 4, 8, 16 and 64 threads (and a connection per thread) against Falcon + async-mongo with the same number of connections per process, " \
+        description: "Puma with 4, 8, 16 and 64 threads (and a connection per thread) against Falcon + mongo-async-pool with the same number of connections per process, " \
           "so both have the same database concurrency and the difference is fibers and the driver. More connections cost Puma a thread each; they cost Falcon nothing else.",
         servers: [
           "puma-1x4", "falcon-1-pool4", "puma-1x8", "falcon-1-pool8", "puma-1x16", "falcon-1-pool16", "puma-1x64", "falcon-1",
@@ -135,7 +135,7 @@ module Bench
       },
       "attribution" => {
         title: "Where the gains come from",
-        description: "One Falcon process with neither, either or both parts of async-mongo installed.",
+        description: "One Falcon process with neither, either or both parts of mongo-async-pool installed.",
         servers: ["falcon-stock-1", "falcon-socket-only-1", "falcon-pool-only-1", "falcon-1"],
         scenarios: ["find", "remote_fanout"],
         concurrency: [256]
@@ -157,7 +157,7 @@ module Bench
       latency_ms: 5.0,
       load_processes: 4,
       yjit: true,
-      uri: ENV.fetch("MONGODB_URI", "mongodb://localhost:27017/async_mongo_bench")
+      uri: ENV.fetch("MONGODB_URI", "mongodb://localhost:27017/mongo_async_pool_bench")
     }.freeze
 
     def initialize(options, argv: [])
@@ -292,7 +292,7 @@ module Bench
 
     def with_server(server, port)
       env = {
-        "ASYNC_MONGO" => server.async_mongo,
+        "MONGO_ASYNC_POOL" => server.mongo_async_pool,
         "SERVER_MODEL" => server.name,
         "MONGODB_URI" => @options[:uri],
         "MONGODB_REMOTE_URI" => @remote_uri.to_s,
@@ -439,7 +439,7 @@ module Bench
         os: `uname -sr`.strip,
         mongodb_server: mongo_client.database.command(buildInfo: 1).first["version"],
         mongo_driver: Mongo::VERSION,
-        async_mongo: Async::Mongo::VERSION,
+        mongo_async_pool: Mongo::Async::Pool::VERSION,
         puma: gem_version("puma"),
         falcon: gem_version("falcon"),
         duration: @options[:duration],
@@ -458,9 +458,9 @@ module Bench
     def header
       env = @environment
       [
-        "async-mongo benchmark — #{env[:time]}",
+        "mongo-async-pool benchmark — #{env[:time]}",
         "#{env[:ruby]} (YJIT #{env[:yjit] ? "on" : "off"}), #{env[:cpu]} ×#{env[:cpus]}",
-        "MongoDB #{env[:mongodb_server]}, mongo #{env[:mongo_driver]}, async-mongo #{env[:async_mongo]}, puma #{env[:puma]}, falcon #{env[:falcon]}",
+        "MongoDB #{env[:mongodb_server]}, mongo #{env[:mongo_driver]}, mongo-async-pool #{env[:mongo_async_pool]}, puma #{env[:puma]}, falcon #{env[:falcon]}",
         "#{@options[:duration]}s per run (#{@options[:warmup]}s warmup), remote latency #{format("%g", @options[:latency_ms])}ms, suites: #{@suites.keys.join(", ")}"
       ].join("\n")
     end

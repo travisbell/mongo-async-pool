@@ -2,8 +2,8 @@
 
 # End-to-end tests against a real MongoDB. Set MONGODB_URI to point elsewhere;
 # they're skipped when no server is reachable.
-RSpec.describe("MongoDB driver with async-mongo installed") do
-  uri = ENV.fetch("MONGODB_URI", "mongodb://localhost:27017/async_mongo_test")
+RSpec.describe("MongoDB driver with mongo-async-pool installed") do
+  uri = ENV.fetch("MONGODB_URI", "mongodb://localhost:27017/mongo_async_pool_test")
 
   available = begin
     probe = Mongo::Client.new(uri, server_selection_timeout: 1, connect_timeout: 1)
@@ -19,7 +19,7 @@ RSpec.describe("MongoDB driver with async-mongo installed") do
 
   let(:options) { {} }
   let(:client) { Mongo::Client.new(uri, { max_pool_size: 10, server_selection_timeout: 5 }.merge(options)) }
-  let(:collection) { client[:"async_mongo_#{SecureRandom.hex(4)}"] }
+  let(:collection) { client[:"mongo_async_pool_#{SecureRandom.hex(4)}"] }
 
   after do
     collection.drop if available
@@ -43,7 +43,7 @@ RSpec.describe("MongoDB driver with async-mongo installed") do
   it "uses the async pool for servers" do
     Sync { collection.insert_one(a: 1) }
 
-    expect(pool).to be_a(Async::Mongo::ConnectionPool)
+    expect(pool).to be_a(Mongo::Async::Pool::ConnectionPool)
     expect(pool.stats[:fallback]).to be_nil
   end
 
@@ -68,7 +68,7 @@ RSpec.describe("MongoDB driver with async-mongo installed") do
 
     expect(results).to eq(200.times.map { |i| i % 100 })
     expect(peak).to be <= 10
-    expect(threads).to eq(0) if Async::Mongo.socket_installed?
+    expect(threads).to eq(0) if Mongo::Async::Pool.socket_installed?
   end
 
   it "falls back to a stock pool for plain threads, sharing generations" do
@@ -106,7 +106,7 @@ RSpec.describe("MongoDB driver with async-mongo installed") do
     # max_read_retries is deprecated (and logs so), but it is the only way to turn off legacy read retries.
     let(:options) { { retry_reads: false, max_read_retries: 0, logger: Logger.new(IO::NULL) } }
 
-    it "wakes a read blocked on the server when the pool is cleared with interrupt_in_use_connections", if: Async::Mongo::Compatibility.interruptible_io? do
+    it "wakes a read blocked on the server when the pool is cleared with interrupt_in_use_connections", if: Mongo::Async::Pool::Compatibility.interruptible_io? do
       Sync do
         collection.insert_one(a: 1)
         error = nil

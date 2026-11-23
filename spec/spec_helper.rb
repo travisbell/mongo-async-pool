@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-require "async/mongo"
+require "mongo/async/pool"
 require "async/barrier"
 
 Dir[File.join(__dir__, "support/**/*.rb")].each { |file| require file }
 
-# The suite runs with the extensions installed; spec/async/mongo/install_spec.rb
+# The suite runs with the extensions installed; spec/mongo/async/pool/install_spec.rb
 # checks that merely requiring the gem changes nothing (in a subprocess).
-Async::Mongo.install!
+Mongo::Async::Pool.install!
 
 Mongo::Logger.logger.level = Logger::WARN
 

@@ -3,8 +3,8 @@
 # End-to-end failure handling through the driver (SDAM + retries) with the
 # async pool, using fail points. Needs a MongoDB server that allows test
 # commands (mongod --setParameter enableTestCommands=1); skipped otherwise.
-RSpec.describe("Failure handling with async-mongo installed") do
-  uri = ENV.fetch("MONGODB_URI", "mongodb://localhost:27017/async_mongo_test")
+RSpec.describe("Failure handling with mongo-async-pool installed") do
+  uri = ENV.fetch("MONGODB_URI", "mongodb://localhost:27017/mongo_async_pool_test")
 
   test_commands = begin
     probe = Mongo::Client.new(uri, server_selection_timeout: 1, connect_timeout: 1)
@@ -31,7 +31,7 @@ RSpec.describe("Failure handling with async-mongo installed") do
   end
 
   let(:admin) { client.use(:admin).database }
-  let(:collection) { client[:"async_mongo_failure_#{SecureRandom.hex(4)}"] }
+  let(:collection) { client[:"mongo_async_pool_failure_#{SecureRandom.hex(4)}"] }
 
   after do
     admin.command(configureFailPoint: "failCommand", mode: "off") if test_commands
@@ -50,7 +50,7 @@ RSpec.describe("Failure handling with async-mongo installed") do
   it "clears the pool on a network error and retries the read" do
     Sync do
       collection.insert_one(a: 1)
-      expect(pool).to be_a(Async::Mongo::ConnectionPool)
+      expect(pool).to be_a(Mongo::Async::Pool::ConnectionPool)
 
       fail_next("find", closeConnection: true)
       expect(collection.find(a: 1).first["a"]).to eq(1)

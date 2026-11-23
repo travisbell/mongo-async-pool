@@ -2,10 +2,10 @@
 
 # The Rack app both servers run. Configured with environment variables:
 #
-#   MONGODB_URI        Database to use (default mongodb://localhost:27017/async_mongo_bench).
+#   MONGODB_URI        Database to use (default mongodb://localhost:27017/mongo_async_pool_bench).
 #   MONGODB_REMOTE_URI The same database through bench/latency_proxy.rb, for ?remote=1.
 #   MONGO_POOL_SIZE    max_pool_size for each server (default 16).
-#   ASYNC_MONGO        "1" to install async-mongo, "pool" or "socket" to install only that part.
+#   MONGO_ASYNC_POOL        "1" to install mongo-async-pool, "pool" or "socket" to install only that part.
 #   SERVER_MODEL       Label returned by /stats ("puma", "falcon", ...).
 
 Warning[:experimental] = false
@@ -16,16 +16,16 @@ require "mongo"
 require "async"
 require "async/barrier"
 
-case ENV["ASYNC_MONGO"]
+case ENV["MONGO_ASYNC_POOL"]
 when "1"
-  require "async/mongo"
-  Async::Mongo.install!
+  require "mongo/async/pool"
+  Mongo::Async::Pool.install!
 when "pool"
-  require "async/mongo"
-  Async::Mongo.install!(socket: false)
+  require "mongo/async/pool"
+  Mongo::Async::Pool.install!(socket: false)
 when "socket"
-  require "async/mongo"
-  Async::Mongo.install!(pool: false)
+  require "mongo/async/pool"
+  Mongo::Async::Pool.install!(pool: false)
 end
 
 Mongo::Logger.logger.level = Logger::WARN
@@ -55,7 +55,7 @@ module Bench
     def client
       # Created lazily so that each worker process gets its own (after any fork).
       @client || @client_lock.synchronize do
-        @client ||= build_client(ENV.fetch("MONGODB_URI", "mongodb://localhost:27017/async_mongo_bench"))
+        @client ||= build_client(ENV.fetch("MONGODB_URI", "mongodb://localhost:27017/mongo_async_pool_bench"))
       end
     end
 
@@ -105,8 +105,8 @@ module Bench
 
       {
         server: ENV.fetch("SERVER_MODEL", "unknown"),
-        # Async::Mongo::VERSION is always loaded (Bundler evaluates the gemspec), so check for install! itself.
-        async_mongo: Async::Mongo.respond_to?(:installed?) && Async::Mongo.installed?,
+        # Mongo::Async::Pool::VERSION is always loaded (Bundler evaluates the gemspec), so check for install! itself.
+        mongo_async_pool: Mongo::Async::Pool.respond_to?(:installed?) && Mongo::Async::Pool.installed?,
         threads: Thread.list.size,
         pools: pools.compact
       }

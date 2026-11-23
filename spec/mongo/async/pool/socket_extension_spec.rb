@@ -2,10 +2,10 @@
 
 require "socket"
 
-RSpec.describe(Async::Mongo::SocketExtension) do
+RSpec.describe(Mongo::Async::Pool::SocketExtension) do
   # Prepended to a subclass, so this works whether or not install! enabled the extension on this Ruby.
   let(:socket_class) do
-    Class.new(Mongo::Socket::TCP) { prepend Async::Mongo::SocketExtension }
+    Class.new(Mongo::Socket::TCP) { prepend Mongo::Async::Pool::SocketExtension }
   end
 
   let(:pair) { UNIXSocket.pair }
@@ -85,7 +85,7 @@ RSpec.describe(Async::Mongo::SocketExtension) do
     end
   end
 
-  it "wakes a blocked reader with SocketError when another fiber closes the socket", if: Async::Mongo::Compatibility.interruptible_io? do
+  it "wakes a blocked reader with SocketError when another fiber closes the socket", if: Mongo::Async::Pool::Compatibility.interruptible_io? do
     socket = build_socket(client_io)
 
     Sync do

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Profiles the driver's hot path in-process (no HTTP): concurrent find_ones from
-# Async tasks, with or without async-mongo. Prints the top frames by CPU time.
+# Async tasks, with or without mongo-async-pool. Prints the top frames by CPU time.
 #
 #   bundle exec ruby bench/profile.rb [--mode both|pool|socket|none] [--fibers 64] [--seconds 5]
 
@@ -22,12 +22,12 @@ end.parse!
 
 unless options[:mode] == "none"
   $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
-  require "async/mongo"
-  Async::Mongo.install!(pool: options[:mode] != "socket", socket: options[:mode] != "pool")
+  require "mongo/async/pool"
+  Mongo::Async::Pool.install!(pool: options[:mode] != "socket", socket: options[:mode] != "pool")
 end
 
 Mongo::Logger.logger.level = Logger::WARN
-client = Mongo::Client.new(ENV.fetch("MONGODB_URI", "mongodb://localhost:27017/async_mongo_bench"), max_pool_size: Integer(ENV.fetch("POOL", "16")))
+client = Mongo::Client.new(ENV.fetch("MONGODB_URI", "mongodb://localhost:27017/mongo_async_pool_bench"), max_pool_size: Integer(ENV.fetch("POOL", "16")))
 documents = client[:documents]
 
 run = lambda do |seconds|

@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-require_relative "lib/async/mongo/version"
+require_relative "lib/mongo/async/pool/version"
 
 Gem::Specification.new do |spec|
-  spec.name = "async-mongo"
-  spec.version = Async::Mongo::VERSION
+  spec.name = "mongo-async-pool"
+  spec.version = Mongo::Async::Pool::VERSION
   spec.authors = ["Travis Bell"]
   spec.email = ["me@travisbell.com"]
 
@@ -12,13 +12,13 @@ Gem::Specification.new do |spec|
   spec.description = <<~DESCRIPTION
     The MongoDB Ruby driver was built for threads: under Falcon and Async every
     socket wait starts a thread and the connection pool runs on threads, so
-    Falcon ends up no faster than Puma. async-mongo makes the driver
+    Falcon ends up no faster than Puma. mongo-async-pool makes the driver
     fiber-native, opt-in and without forking it: socket waits go through the
     event loop and a fiber-native connection pool (a drop-in replacement that
     passes the official CMAP spec tests) replaces the stock one, falling back
     to the stock pool outside the event loop.
   DESCRIPTION
-  spec.homepage = "https://github.com/travisbell/async-mongo"
+  spec.homepage = "https://github.com/travisbell/mongo-async-pool"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.4"
 

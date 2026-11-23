@@ -4,7 +4,7 @@ require "async/queue"
 require "yaml"
 
 # Runs the official CMAP (Connection Monitoring and Pooling) spec tests against
-# Async::Mongo::ConnectionPool, adapted from the MongoDB Ruby driver's runner
+# Mongo::Async::Pool::ConnectionPool, adapted from the MongoDB Ruby driver's runner
 # (spec/runners/cmap.rb at v2.26.0). The specs' "threads" run as Async tasks in
 # one reactor, which is how the pool is used.
 #
@@ -317,7 +317,7 @@ RSpec.describe("CMAP spec tests") do
         end
 
         # CMAP_POOL=stock runs the same specs against the driver's pool, to check the runner itself.
-        pool_class = ENV["CMAP_POOL"] == "stock" ? Mongo::Server::ConnectionPool : Async::Mongo::ConnectionPool
+        pool_class = ENV["CMAP_POOL"] == "stock" ? Mongo::Server::ConnectionPool : Mongo::Async::Pool::ConnectionPool
         pool = pool_class.new(@server, @server.options)
         @server.instance_variable_set(:@pool, pool)
 

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe(Async::Mongo::Controller) do
+RSpec.describe(Mongo::Async::Pool::Controller) do
   let(:resource_class) do
     Struct.new(:id, :reusable, :viable, :closed_reason) do
       def close_reason
@@ -20,7 +20,7 @@ RSpec.describe(Async::Mongo::Controller) do
   let(:created) { [] }
 
   def build_controller(limit: 3, max_connecting: 2, wait_timeout: 1, &before_create)
-    Async::Mongo::Controller.new(limit: limit, max_connecting: max_connecting, wait_timeout: wait_timeout, address: "test") do |_context|
+    Mongo::Async::Pool::Controller.new(limit: limit, max_connecting: max_connecting, wait_timeout: wait_timeout, address: "test") do |_context|
       before_create&.call
       resource_class.new(created.size + 1, true, true).tap { |resource| created << resource }
     end

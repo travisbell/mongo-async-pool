@@ -1,4 +1,4 @@
-# async-mongo
+# mongo-async-pool
 
 Lets [Falcon](https://github.com/socketry/falcon)'s fiber concurrency reach
 MongoDB.
@@ -23,13 +23,13 @@ for threads, and under Falcon it gives most of that back:
   the socket, so the next query on it gets someone else's reply
   (`Mongo::Error::UnexpectedResponse`).
 
-async-mongo makes the driver fiber-native without forking it: socket waits go
+mongo-async-pool makes the driver fiber-native without forking it: socket waits go
 through the event loop, and a connection pool that runs on fibers replaces the
-stock one. It changes nothing until you call `Async::Mongo.install!`, and it's
+stock one. It changes nothing until you call `Mongo::Async::Pool.install!`, and it's
 a drop-in replacement: it passes all of the official MongoDB connection pool
 spec tests.
 
-When queries wait on the network, one Falcon process with async-mongo serves
+When queries wait on the network, one Falcon process with mongo-async-pool serves
 2.6–2.7× the requests of a 16-thread Puma process, and four Falcon processes
 serve 7–39% more requests than four Puma processes from 64 clients up, usually
 on far less CPU (as little as 40% of Puma's). Falcon with the stock driver gets
@@ -40,22 +40,22 @@ some of that concurrency, but its latency falls apart under load. See
 
 ```ruby
 # Gemfile
-gem "async-mongo", require: "async/mongo/install"
+gem "mongo-async-pool", require: "mongo/async/pool/install"
 ```
 
 or install explicitly at boot, before any `Mongo::Client` connects:
 
 ```ruby
-require "async/mongo"
+require "mongo/async/pool"
 
-Async::Mongo.install!                 # pool + socket extension (where supported)
-Async::Mongo.install!(socket: false)  # just the pool
-Async::Mongo.install!(pool: false)    # just the socket extension
+Mongo::Async::Pool.install!                 # pool + socket extension (where supported)
+Mongo::Async::Pool.install!(socket: false)  # just the pool
+Mongo::Async::Pool.install!(pool: false)    # just the socket extension
 ```
 
 `install!` is process-wide, idempotent, and can't be undone. It checks that the
-driver still has the internals async-mongo relies on and raises
-`Async::Mongo::IncompatibleDriverError` (naming what's missing) if not.
+driver still has the internals mongo-async-pool relies on and raises
+`Mongo::Async::Pool::IncompatibleDriverError` (naming what's missing) if not.
 
 It's safe to install in any process: connections are only taken from the
 async pool by fibers running in an Async task; everything else (Puma threads,
@@ -63,7 +63,7 @@ Sidekiq, scripts) transparently uses the driver's stock pool.
 
 ## What it changes
 
-### `Async::Mongo::ConnectionPool`
+### `Mongo::Async::Pool::ConnectionPool`
 
 Replaces `Mongo::Server::ConnectionPool` for every server, except in
 load-balanced deployments (see [Load-balanced deployments](#load-balanced-deployments)).
@@ -108,7 +108,7 @@ client.cluster.servers.first.pool.stats
 last call. Tracking starts with the first call, so a pool that's never measured
 doesn't do it.
 
-### `Async::Mongo::SocketExtension`
+### `Mongo::Async::Pool::SocketExtension`
 
 Prepended to `Mongo::Socket`. When a fiber scheduler is active, reads and
 write-waits use `IO#wait_readable` / `IO#wait_writable`, which the scheduler
@@ -123,7 +123,7 @@ fiber blocked on it only on Ruby 3.5+ (`Fiber::Scheduler#fiber_interrupt`). So
 with `install!(socket: true)`, and readers on a dead server are then only woken
 by `socketTimeoutMS`.
 
-### `Async::Mongo::SafeFinalizer`
+### `Mongo::Async::Pool::SafeFinalizer`
 
 Installed with the pool. The stock pool's finalizer stops at the first
 connection that fails to disconnect (e.g. `Errno::EBADF` after a fork, or an
@@ -134,7 +134,7 @@ never raises.
 ## Benchmarks
 
 `bundle exec ruby bench/run.rb` compares Puma + stock mongo, Falcon + stock
-mongo and Falcon + async-mongo as the number of concurrent clients grows from 1
+mongo and Falcon + mongo-async-pool as the number of concurrent clients grows from 1
 to 1,024, at 1 process and at 4 processes. It writes a self-contained HTML
 report plotting requests/s, latency and CPU against the number of clients; see
 [bench/](bench/README.md).
@@ -145,7 +145,7 @@ per request with 64 connections per process, so its concurrency is its
 connection pool. Measured on an Apple M3 Ultra, Ruby 4.0.6 + YJIT, MongoDB 8.0
 on localhost (Docker), mongo 2.26.0, Puma 8.0.2, Falcon 0.57.0. Requests/s:
 
-| 1 process | Clients | Puma, 4 threads | Puma, 8 threads | Puma, 16 threads | Falcon + stock mongo | Falcon + async-mongo |
+| 1 process | Clients | Puma, 4 threads | Puma, 8 threads | Puma, 16 threads | Falcon + stock mongo | Falcon + mongo-async-pool |
 |---|--:|--:|--:|--:|--:|--:|
 | `/find` | 64 | 5,472 | 5,310 | 5,349 | 5,506 | **8,344** |
 | `/find` | 256 | 5,423 | 5,493 | 5,399 | 4,690 | **7,536** |
@@ -154,7 +154,7 @@ on localhost (Docker), mongo 2.26.0, Puma 8.0.2, Falcon 0.57.0. Requests/s:
 | `/fanout?remote=1` | 64 | 124 | 259 | 542 | 909 | **1,548** |
 | `/fanout?remote=1` | 256 | 123 | 264 | 536 | 689 | **1,492** |
 
-| 4 processes | Clients | Puma, 4 threads | Puma, 8 threads | Puma, 16 threads | Falcon + stock mongo | Falcon + async-mongo |
+| 4 processes | Clients | Puma, 4 threads | Puma, 8 threads | Puma, 16 threads | Falcon + stock mongo | Falcon + mongo-async-pool |
 |---|--:|--:|--:|--:|--:|--:|
 | `/find` | 64 | 10,048 | 10,185 | 10,490 | 10,211 | **11,901** |
 | `/find` | 256 | 9,737 | 10,749 | 10,688 | 11,295 | **13,741** |
@@ -171,17 +171,17 @@ one after another under Puma.
 - **Puma's throughput is capped by its threads when queries wait on the
   network.** With the database 5ms away, one Puma process serves about 620,
   1,340 or 2,800 req/s with 4, 8 or 16 threads, however many clients are
-  waiting. One Falcon + async-mongo process serves 7,300–7,650 (2.6–2.7× a
+  waiting. One Falcon + mongo-async-pool process serves 7,300–7,650 (2.6–2.7× a
   16-thread Puma), and with five queries per request 2.8–2.9× as many.
 - **Fibers alone aren't enough.** Falcon with the stock driver gets past
   Puma's thread cap too, but falls off as load grows, with tail latency
   measured in hundreds of milliseconds to seconds (p99 317ms at 256 clients
-  against 40ms with async-mongo, one process, 5ms away).
+  against 40ms with mongo-async-pool, one process, 5ms away).
 - **On a local database, the work is CPU-bound** and Puma's thread count barely
-  matters. One Falcon + async-mongo process serves 37–58% more requests than
+  matters. One Falcon + mongo-async-pool process serves 37–58% more requests than
   the best Puma configuration from 16 to 256 clients; four processes serve
   13–28% more on about 40% of the CPU (2.3–2.7 cores against 5.1–6.5).
-- **At four processes, with the database 5ms away**, Falcon + async-mongo
+- **At four processes, with the database 5ms away**, Falcon + mongo-async-pool
   serves 7–22% more requests than a 16-thread Puma (64 connections in all) from
   64 clients up, on about half its CPU (2.1–2.4 cores against 3.7–4.6); Puma
   with 8 or 4 threads serves about a half or a quarter as many.
@@ -212,7 +212,7 @@ one after another under Puma.
 
 With the same number of database connections per process (Puma with a thread
 per connection), the database concurrency is equal and the difference is
-fibers and the driver. Requests/s at 256 clients, Puma → Falcon + async-mongo:
+fibers and the driver. Requests/s at 256 clients, Puma → Falcon + mongo-async-pool:
 
 | Connections per process | `/find`, 1 process | `/find?remote=1`, 1 process | `/fanout?remote=1`, 1 process | `/find?remote=1`, 4 processes |
 |--:|--:|--:|--:|--:|
@@ -221,7 +221,7 @@ fibers and the driver. Requests/s at 256 clients, Puma → Falcon + async-mongo:
 | 16 | 5,399 → **7,050** | **2,806** → 2,593 | **536** → 451 | 10,017 → **10,495** |
 | 64 | 5,399 → **7,536** | 5,081 → **7,302** | 1,275 → **1,492** | 9,181 → **11,387** |
 
-- **CPU-bound work is faster on Falcon + async-mongo at every pool size**:
+- **CPU-bound work is faster on Falcon + mongo-async-pool at every pool size**:
   22–40% on one process and 9–37% on four, at 256 clients.
 - **When the connections are the limit, it's close to a tie**: with 4–16
   connections and the database 5ms away, throughput is about connections ÷
@@ -269,7 +269,7 @@ rather than for the number of clients:
 | async | 2.24+ |
 | MongoDB topologies | standalone, replica set, sharded; [load-balanced](#load-balanced-deployments) servers keep the stock pool |
 
-`Async::Mongo::ConnectionPool` is a drop-in replacement for
+`Mongo::Async::Pool::ConnectionPool` is a drop-in replacement for
 `Mongo::Server::ConnectionPool`: the same public methods and options, the same
 CMAP monitoring events (in the same order, with the same `ConnectionClosed`
 reasons), the same errors, and the same semantics for clearing, pausing,
@@ -295,7 +295,7 @@ When the driver connects in load-balanced mode (`loadBalanced=true`, e.g. a
 MongoDB Atlas sharded cluster behind a private endpoint, or mongos behind a
 layer 4 load balancer), servers keep the driver's stock
 `Mongo::Server::ConnectionPool`. Everything works exactly as it does without
-async-mongo, but the async pool's improvements don't apply to those
+mongo-async-pool, but the async pool's improvements don't apply to those
 connections.
 
 In this mode the load balancer may route each connection to a different
@@ -309,7 +309,7 @@ correctly.
 
 | | Other topologies | Load-balanced |
 |---|---|---|
-| Connection pool | `Async::Mongo::ConnectionPool` | `Mongo::Server::ConnectionPool` |
+| Connection pool | `Mongo::Async::Pool::ConnectionPool` | `Mongo::Server::ConnectionPool` |
 | Socket waits through the fiber scheduler (`SocketExtension`) | ✓ | ✓ |
 | Safe stock-pool finalizer (`SafeFinalizer`) | ✓ (fallback pool) | ✓ |
 | Connections discarded when a fiber is cancelled mid-operation | ✓ | ✗ a connection can be returned with an unread reply, and the next operation on it fails |
@@ -328,8 +328,8 @@ client.cluster.servers.map { |server| server.pool.class }
 
 ```bash
 bundle install
-docker run -d --rm --name async-mongo-test -p 27017:27017 mongo:8 --setParameter enableTestCommands=1
-bundle exec rspec          # MONGODB_URI, default mongodb://localhost:27017/async_mongo_test
+docker run -d --rm --name mongo-async-pool-test -p 27017:27017 mongo:8 --setParameter enableTestCommands=1
+bundle exec rspec          # MONGODB_URI, default mongodb://localhost:27017/mongo_async_pool_test
 bundle exec rubocop
 MONGO_RUBY_DRIVER_VERSION="~> 2.24.0" bundle update mongo && bundle exec rspec
 ```

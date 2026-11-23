@@ -13,7 +13,7 @@ module Bench
     # Color follows the server family (never its position). The three main
     # families get the first three slots of a categorical palette, which pass
     # the color-vision-deficiency and contrast checks together in light and dark
-    # mode; variants (partial installs, Puma with async-mongo installed) are
+    # mode; variants (partial installs, Puma with mongo-async-pool installed) are
     # shown in neutral gray and told apart by their labels, rather than adding
     # hues that can't be distinguished.
     FAMILY_SLOTS = {
@@ -21,17 +21,17 @@ module Bench
       "falcon-stock" => "2",
       "falcon" => "3",
       "falcon-pool-only" => "neutral",
-      "puma-async-mongo" => "neutral",
+      "puma-mongo-async-pool" => "neutral",
       "falcon-socket-only" => "neutral"
     }.freeze
 
     FAMILY_NAMES = {
       "puma" => "Puma + stock mongo",
       "falcon-stock" => "Falcon + stock mongo",
-      "falcon" => "Falcon + async-mongo",
-      "puma-async-mongo" => "Puma + async-mongo installed",
-      "falcon-pool-only" => "Falcon + async-mongo pool only",
-      "falcon-socket-only" => "Falcon + async-mongo socket only"
+      "falcon" => "Falcon + mongo-async-pool",
+      "puma-mongo-async-pool" => "Puma + mongo-async-pool installed",
+      "falcon-pool-only" => "Falcon + mongo-async-pool pool only",
+      "falcon-socket-only" => "Falcon + mongo-async-pool socket only"
     }.freeze
 
     # Each scenario's route (for results that predate the runner recording them).
@@ -70,15 +70,15 @@ module Bench
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>async-mongo benchmark</title>
+        <title>mongo-async-pool benchmark</title>
         <style>#{STYLE}</style>
         </head>
         <body>
         <main class="viz-root">
           <header class="page-header">
             <div>
-              <h1>async-mongo benchmark</h1>
-              <p class="lede">Puma serves concurrent requests with a pool of threads; Falcon runs each request in a fiber, so a process can serve many at once without a thread for each. With the stock MongoDB driver, that concurrency doesn't reach the database. These are the same Rack app and queries on Puma with the stock driver, Falcon with the stock driver, and Falcon with async-mongo, as the number of concurrent clients grows.</p>
+              <h1>mongo-async-pool benchmark</h1>
+              <p class="lede">Puma serves concurrent requests with a pool of threads; Falcon runs each request in a fiber, so a process can serve many at once without a thread for each. With the stock MongoDB driver, that concurrency doesn't reach the database. These are the same Rack app and queries on Puma with the stock driver, Falcon with the stock driver, and Falcon with mongo-async-pool, as the number of concurrent clients grows.</p>
               <p class="meta">#{h(environment_line)}</p>
             </div>
             <button type="button" class="theme-toggle" aria-label="Toggle dark mode">Theme</button>
@@ -114,14 +114,14 @@ module Bench
         ("YJIT" if env["yjit"]),
         "MongoDB #{env["mongodb_server"]}",
         "mongo #{env["mongo_driver"]}",
-        "async-mongo #{env["async_mongo"]}",
+        "mongo-async-pool #{env["mongo_async_pool"]}",
         "Puma #{env["puma"]}",
         "Falcon #{env["falcon"]}"
       ].compact.join(" · ")
     end
 
     # Headline numbers from the fibers-vs-threads sweep (or whatever subset of
-    # it was run): Falcon + async-mongo against the other two setups.
+    # it was run): Falcon + mongo-async-pool against the other two setups.
     def highlights
       tiles = []
       # Heavy but representative load: 256 clients if measured, else the most measured.
@@ -277,7 +277,7 @@ module Bench
             <li>CPU is the server's total (all of its processes; 100% is one core) and memory is the resident size of all of its processes; Falcon runs a supervisor process next to its workers. Threads are per process, including the driver's monitoring threads.</li>
             <li>When queries wait on the network, throughput is capped at about <em>connections ÷ round trip</em> for any server; the Connections column is the total across processes.</li>
             <li>The database ran on the same machine, so at high request rates it, rather than the app server, can be the limit; <code>/ping</code> shows the ceiling without a database.</li>
-            <li>“+ stock mongo” is the MongoDB driver as it ships; “+ async-mongo” has async-mongo installed. Servers are labeled with their configuration: worker processes, threads per worker (Puma) and <code>max_pool_size</code> per worker. Puma runs with 4, 8 or 16 threads and a connection per thread, as Ruby apps usually do, so its concurrency is its thread count; Falcon runs a fiber per request with 64 connections per process, so its concurrency is its connection pool. Puma's thread counts are told apart by shade and dash pattern, and the headline numbers compare against the best Puma configuration at each point.</li>
+            <li>“+ stock mongo” is the MongoDB driver as it ships; “+ mongo-async-pool” has mongo-async-pool installed. Servers are labeled with their configuration: worker processes, threads per worker (Puma) and <code>max_pool_size</code> per worker. Puma runs with 4, 8 or 16 threads and a connection per thread, as Ruby apps usually do, so its concurrency is its thread count; Falcon runs a fiber per request with 64 connections per process, so its concurrency is its connection pool. Puma's thread counts are told apart by shade and dash pattern, and the headline numbers compare against the best Puma configuration at each point.</li>
             <li>Line charts space the client counts evenly (each is 4× the last); latency is on a log scale.</li>
             <li>Under Puma, threads limit how many queries run at once; under Falcon, the connection pool does. Four Falcon processes with 64 connections each can keep the local database at its limit (about 13,000–14,000 req/s here), where queries queue inside MongoDB and tail latency rises; fewer connections per process trade a little throughput for less database load and lower tail latency (see the README's “Sizing the connection pool”).</li>
           </ul>
@@ -295,7 +295,7 @@ module Bench
         "Machine" => "#{@environment["cpu"]} ×#{@environment["cpus"]}, #{@environment["os"]}",
         "Ruby" => @environment["ruby"],
         "MongoDB" => @environment["mongodb_server"],
-        "Gems" => "mongo #{@environment["mongo_driver"]}, async-mongo #{@environment["async_mongo"]}, puma #{@environment["puma"]}, falcon #{@environment["falcon"]}"
+        "Gems" => "mongo #{@environment["mongo_driver"]}, mongo-async-pool #{@environment["mongo_async_pool"]}, puma #{@environment["puma"]}, falcon #{@environment["falcon"]}"
       }.map { |key, value| "<dt>#{h(key)}</dt><dd>#{h(value)}</dd>" }.join("\n")
     end
 
@@ -954,7 +954,7 @@ module Bench
         });
 
         try {
-          var saved = localStorage.getItem("async-mongo-bench-theme");
+          var saved = localStorage.getItem("mongo-async-pool-bench-theme");
           if (saved) root.setAttribute("data-theme", saved);
         } catch (e) {}
 
@@ -963,14 +963,14 @@ module Bench
             (!root.getAttribute("data-theme") && window.matchMedia("(prefers-color-scheme: dark)").matches);
           var next = dark ? "light" : "dark";
           root.setAttribute("data-theme", next);
-          try { localStorage.setItem("async-mongo-bench-theme", next); } catch (e) {}
+          try { localStorage.setItem("mongo-async-pool-bench-theme", next); } catch (e) {}
         });
 
         document.querySelector(".download").addEventListener("click", function () {
           var data = document.getElementById("results-data").textContent;
           var link = document.createElement("a");
           link.href = URL.createObjectURL(new Blob([data], { type: "application/json" }));
-          link.download = "async-mongo-benchmark.json";
+          link.download = "mongo-async-pool-benchmark.json";
           link.click();
           URL.revokeObjectURL(link.href);
         });

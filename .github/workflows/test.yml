@@ -18,7 +18,7 @@ jobs:
     env:
       BUNDLE_WITHOUT: benchmark
       MONGO_RUBY_DRIVER_VERSION: ${{ matrix.mongo }}
-      MONGODB_URI: mongodb://localhost:27017/async_mongo_test
+      MONGODB_URI: mongodb://localhost:27017/mongo_async_pool_test
 
     steps:
       - uses: actions/checkout@v4

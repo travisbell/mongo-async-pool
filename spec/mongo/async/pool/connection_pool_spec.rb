@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe(Async::Mongo::ConnectionPool) do
+RSpec.describe(Mongo::Async::Pool::ConnectionPool) do
   describe "#initialize" do
     it "starts paused" do
       pool = build_pool
@@ -472,7 +472,7 @@ RSpec.describe(Async::Mongo::ConnectionPool) do
 
       Sync do
         connection = pool.check_out
-        expect(connection).to be_a(Async::Mongo::Connection)
+        expect(connection).to be_a(Mongo::Async::Pool::Connection)
 
         other = Thread.new { Sync { pool.check_out } }.value
         expect(other).to eq(:stock_connection)

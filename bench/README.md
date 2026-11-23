@@ -1,7 +1,7 @@
 # Benchmarks
 
 The same Rack app ([app.rb](app.rb)) on Puma's thread pool and Falcon's
-fibers, with the MongoDB driver's stock connection pool and with async-mongo.
+fibers, with the MongoDB driver's stock connection pool and with mongo-async-pool.
 One command runs it and writes an HTML report:
 
 ```bash
@@ -12,7 +12,7 @@ open bench/results/<timestamp>.html
 ```
 
 Needs a MongoDB server (`MONGODB_URI`, default
-`mongodb://localhost:27017/async_mongo_bench`); it seeds 10,000 documents.
+`mongodb://localhost:27017/mongo_async_pool_bench`); it seeds 10,000 documents.
 
 ## Suites
 
@@ -24,7 +24,7 @@ fibers as the number of concurrent clients grows (1, 4, 16, 64, 256 and
 |---|---|---|
 | Puma + stock mongo, 4, 8 and 16 threads | `puma-1x4`, `puma-1x8`, `puma-1x16` | `puma-4x4`, `puma-4x8`, `puma-4x16` |
 | Falcon + stock mongo | `falcon-stock-1` | `falcon-stock-4` |
-| Falcon + async-mongo | `falcon-1` | `falcon-4` |
+| Falcon + mongo-async-pool | `falcon-1` | `falcon-4` |
 
 Puma gets a database connection per thread, as Ruby apps usually do, so its
 concurrency is its thread count. Falcon runs a fiber per request with 64
@@ -37,8 +37,8 @@ Optional suites (`--suites concurrency,connections,attribution,ceiling`):
 
 | Suite | What it shows |
 |---|---|
-| `connections` | Puma with 4, 8, 16 and 64 threads against Falcon + async-mongo with the same number of connections per process (`falcon-1-pool4`, …), at 1 and 4 processes and 64 and 256 clients: the same database concurrency, so the difference is fibers and the driver |
-| `attribution` | One Falcon process with neither, either or both parts of async-mongo, at 256 clients |
+| `connections` | Puma with 4, 8, 16 and 64 threads against Falcon + mongo-async-pool with the same number of connections per process (`falcon-1-pool4`, …), at 1 and 4 processes and 64 and 256 clients: the same database concurrency, so the difference is fibers and the driver |
+| `attribution` | One Falcon process with neither, either or both parts of mongo-async-pool, at 256 clients |
 | `ceiling` | `/ping` (no database) on Puma and Falcon, the HTTP servers' own ceiling |
 
 Each server is started once and measured for everything any selected suite
@@ -51,11 +51,11 @@ Server names describe the configuration:
 | Name | Meaning |
 |---|---|
 | `puma-WxT` | Puma, W workers × T threads, stock pool. `puma-1x16` is single mode (no cluster master). |
-| `puma-async-mongo-WxT` | The same with async-mongo installed (every checkout uses its fallback stock pool) |
-| `falcon-N` | Falcon with N worker processes and async-mongo |
+| `puma-mongo-async-pool-WxT` | The same with mongo-async-pool installed (every checkout uses its fallback stock pool) |
+| `falcon-N` | Falcon with N worker processes and mongo-async-pool |
 | `falcon-stock-N` | Falcon with N workers and the stock pool |
-| `falcon-pool-only-N` | `Async::Mongo.install!(socket: false)` |
-| `falcon-socket-only-N` | `Async::Mongo.install!(pool: false)` |
+| `falcon-pool-only-N` | `Mongo::Async::Pool.install!(socket: false)` |
+| `falcon-socket-only-N` | `Mongo::Async::Pool.install!(pool: false)` |
 | `…-poolN` suffix | Connection pool size per process, e.g. `falcon-1-pool16`, `puma-1x64-pool16` |
 
 Each process gets `max_pool_size` equal to its thread count under Puma and 64

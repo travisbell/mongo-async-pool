@@ -46,9 +46,9 @@ module PoolHelpers
     end
   end
 
-  # A real Async::Mongo::Connection (so the pool recognizes it and the real
+  # A real Mongo::Async::Pool::Connection (so the pool recognizes it and the real
   # reusable?/viable? logic runs), with the I/O replaced by flags.
-  class FakeConnection < Async::Mongo::Connection
+  class FakeConnection < Mongo::Async::Pool::Connection
     @next_id = 0
 
     class << self
@@ -116,7 +116,7 @@ module PoolHelpers
   # Build a pool whose connections are FakeConnections. The block, if given,
   # runs before each connection is created (e.g. to sleep or raise).
   def build_pool(**options, &before_connect)
-    pool = Async::Mongo::ConnectionPool.new(fake_server, { monitoring: false }.merge(options))
+    pool = Mongo::Async::Pool::ConnectionPool.new(fake_server, { monitoring: false }.merge(options))
 
     allow(pool).to receive(:create_connection) do
       before_connect&.call
