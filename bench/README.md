@@ -6,8 +6,8 @@ One command runs it and writes an HTML report:
 
 ```bash
 bundle install
-bundle exec ruby bench/run.rb          # ~50 minutes
-bundle exec ruby bench/run.rb --quick  # 3s runs, ~20 minutes
+bundle exec ruby bench/run.rb          # ~35 minutes
+bundle exec ruby bench/run.rb --quick  # 3s runs, ~12 minutes
 open bench/results/<timestamp>.html
 ```
 
@@ -33,16 +33,19 @@ against the number of clients (Puma's thread counts as shades and dash
 patterns of one color), and its headline numbers compare against the best
 Puma configuration at each point.
 
-Optional suites (`--suites concurrency,connections,attribution,ceiling`):
+Optional suites (`--suites concurrency,connections,latency,attribution,ceiling`,
+about an hour for all five):
 
 | Suite | What it shows |
 |---|---|
 | `connections` | Puma with 4, 8, 16 and 64 threads against Falcon + mongo-async-pool with the same number of connections per process (`falcon-1-pool4`, …), at 1 and 4 processes and 64 and 256 clients: the same database concurrency, so the difference is fibers and the driver |
+| `latency` | Puma (16 threads), Falcon + stock mongo and Falcon + mongo-async-pool at 1 and 4 processes with 1, 2 and 5ms added to each database round trip, at 256 clients: how the difference depends on how long queries keep the app waiting |
 | `attribution` | One Falcon process with neither, either or both parts of mongo-async-pool, at 256 clients |
 | `ceiling` | `/ping` (no database) on Puma and Falcon, the HTTP servers' own ceiling |
 
-Each server is started once and measured for everything any selected suite
-needs from it, so shared measurements are taken once.
+Each server is started once per added latency and measured for everything any
+selected suite needs from it, so shared measurements are taken once (the
+`latency` suite's 2ms measurements are the `concurrency` suite's).
 
 ## Servers
 
@@ -51,7 +54,6 @@ Server names describe the configuration:
 | Name | Meaning |
 |---|---|
 | `puma-WxT` | Puma, W workers × T threads, stock pool. `puma-1x16` is single mode (no cluster master). |
-| `puma-mongo-async-pool-WxT` | The same with mongo-async-pool installed (every checkout uses its fallback stock pool) |
 | `falcon-N` | Falcon with N worker processes and mongo-async-pool |
 | `falcon-stock-N` | Falcon with N workers and the stock pool |
 | `falcon-pool-only-N` | `Mongo::Async::Pool.install!(socket: false)` |
@@ -72,22 +74,28 @@ bundle exec ruby bench/run.rb --help
 
 ## Scenarios
 
-| Scenario | Request |
-|---|---|
-| `/find` | one indexed `find_one` against the local database |
-| `/find?remote=1` | the same, through [latency_proxy.rb](latency_proxy.rb), which delays the database's replies by `--latency-ms` (default 5ms) to simulate a database farther away than localhost |
-| `/fanout?remote=1` | 5 `find_one`s per request through the proxy: concurrent under Falcon (`Async::Barrier`), one after another under Puma, as each would naturally be written |
-| `/fanout` | the same against the local database (custom runs) |
-| `/ping` | no database (`ceiling` suite) |
+| Scenario | Route | Request |
+|---|---|---|
+| `find` | `/find` | one indexed `find_one` against the local database |
+| `remote` | `/find?remote=1` | the same, through [latency_proxy.rb](latency_proxy.rb), which delays the database's replies by `--latency-ms` (default 2ms) |
+| `remote_fanout` | `/fanout?remote=1` | 5 `find_one`s per request through the proxy: concurrent under Falcon (`Async::Barrier`), one after another under Puma, as each would naturally be written |
+| `ping` | `/ping` | no database (`ceiling` suite) |
+
+The proxy's delay stands for the time each query keeps the app waiting beyond
+a round trip to localhost: the network (within a cloud region, roughly 0.1–0.5ms
+inside one availability zone and 0.5–2ms across zones) plus however long the
+query runs in the database. The default 2ms is a fast query on a database a
+zone away; the `latency` suite also runs 1 and 5ms. To match your own
+deployment, use the median query duration your application sees.
 
 The load generator ([load.rb](load.rb)) is closed-loop: N persistent HTTP/1.1
 connections, each sending its next request when the previous response arrives.
 
 When queries wait on the network (`remote*`), throughput is capped at about
-`connections / round trip` for any server: with 16 connections and ~6ms round
-trips, ~2,700 queries/s. Raising it means more connections, which for Puma
-means more threads or workers. Concurrency 1 shows per-request latency without
-any queueing.
+`connections / round trip` for any server: with 16 connections and ~2.2ms
+round trips, ~7,000 queries/s. Raising it means more connections, which for
+Puma means more threads or workers. Concurrency 1 shows per-request latency
+without any queueing.
 
 ## Output
 
@@ -111,6 +119,17 @@ any queueing.
   high request rates the database (not the app server) can become the limit;
   compare with `ping`.
 - YJIT is on for the servers (`--no-yjit` to turn it off).
+- Every scenario is warmed up (3s, `--warmup`) at 1,024 clients, whatever
+  levels are measured, so each server has grown its heap to the same peak
+  first and results don't depend on which levels a run includes. Falcon +
+  mongo-async-pool depends on that most: with many requests in flight each GC
+  scans every live fiber's stack, and one process at 256 clients served about
+  5,800 req/s on `/find` with a heap that hadn't grown, against about 8,200
+  after the warmup (Puma and Falcon + stock mongo: no difference). Pre-sizing
+  the heap (`RUBY_GC_HEAP_0_INIT_SLOTS` etc.) has the same effect.
+- At 1–4 clients, with the machine mostly idle, the proxy's delay overshoots
+  (about 4ms per round trip for 2ms, as timers fire late), so low-concurrency
+  `remote` latencies are pessimistic, for every server alike.
 
 ## Profiling
 

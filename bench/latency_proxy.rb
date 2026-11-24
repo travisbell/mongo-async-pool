@@ -7,6 +7,8 @@
 #
 #   ruby bench/latency_proxy.rb LISTEN_PORT UPSTREAM_HOST:PORT DELAY_MS
 
+Warning[:experimental] = false
+
 require "async"
 require "async/queue"
 require "socket"

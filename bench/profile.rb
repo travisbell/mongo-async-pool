@@ -5,6 +5,8 @@
 #
 #   bundle exec ruby bench/profile.rb [--mode both|pool|socket|none] [--fibers 64] [--seconds 5]
 
+Warning[:experimental] = false
+
 require "optparse"
 require "stackprof"
 require "mongo"

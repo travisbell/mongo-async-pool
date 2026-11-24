@@ -29,11 +29,12 @@ stock one. It changes nothing until you call `Mongo::Async::Pool.install!`, and 
 a drop-in replacement: it passes all of the official MongoDB connection pool
 spec tests.
 
-When queries wait on the network, one Falcon process with mongo-async-pool serves
-2.6–2.7× the requests of a 16-thread Puma process, and four Falcon processes
-serve 7–39% more requests than four Puma processes from 64 clients up, usually
-on far less CPU (as little as 40% of Puma's). Falcon with the stock driver gets
-some of that concurrency, but its latency falls apart under load. See
+With the database 2ms away, one Falcon process with mongo-async-pool serves
+46–60% more requests than a 16-thread Puma process from 64 to 256 clients, and
+four Falcon processes serve 13–52% more than four Puma processes, on half to
+two thirds of the CPU. The farther away the database, the bigger the gap: at
+5ms, one process serves 3× as much. Falcon with the stock driver gets some of
+that concurrency, but its latency falls apart under load. See
 [Benchmarks](#benchmarks).
 
 ## Installation
@@ -141,108 +142,137 @@ never raises.
 ## Benchmarks
 
 `bundle exec ruby bench/run.rb` compares Puma + stock mongo, Falcon + stock
-mongo and Falcon + mongo-async-pool as the number of concurrent clients grows from 1
-to 1,024, at 1 process and at 4 processes. It writes a self-contained HTML
-report plotting requests/s, latency and CPU against the number of clients; see
-[bench/](bench/README.md).
+mongo and Falcon + mongo-async-pool as the number of concurrent clients grows
+from 1 to 1,024, at 1 process and at 4 processes. It writes a self-contained
+HTML report plotting requests/s, latency and CPU against the number of clients;
+see [bench/](bench/README.md).
 
 Puma runs with 4, 8 or 16 threads and a database connection per thread, as Ruby
 apps usually do, so its concurrency is its thread count. Falcon runs a fiber
 per request with 64 connections per process, so its concurrency is its
-connection pool. Measured on an Apple M3 Ultra, Ruby 4.0.6 + YJIT, MongoDB 8.0
-on localhost (Docker), mongo 2.26.0, Puma 8.0.2, Falcon 0.57.0. Requests/s:
+connection pool. Measured on an Apple M3 Ultra, Ruby 4.0.6 + YJIT, MongoDB
+8.0.8 on localhost (Docker), mongo 2.26.0, Puma 8.0.2, Falcon 0.57.0.
+Requests/s:
 
 | 1 process | Clients | Puma, 4 threads | Puma, 8 threads | Puma, 16 threads | Falcon + stock mongo | Falcon + mongo-async-pool |
 |---|--:|--:|--:|--:|--:|--:|
-| `/find` | 64 | 5,472 | 5,310 | 5,349 | 5,506 | **8,344** |
-| `/find` | 256 | 5,423 | 5,493 | 5,399 | 4,690 | **7,536** |
-| `/find?remote=1` | 64 | 615 | 1,363 | 2,793 | 5,103 | **7,647** |
-| `/find?remote=1` | 256 | 620 | 1,321 | 2,806 | 4,470 | **7,302** |
-| `/fanout?remote=1` | 64 | 124 | 259 | 542 | 909 | **1,548** |
-| `/fanout?remote=1` | 256 | 123 | 264 | 536 | 689 | **1,492** |
+| `/find` | 64 | 5,765 | 5,750 | 5,851 | 6,281 | **9,094** |
+| `/find` | 256 | 5,704 | 6,024 | 6,087 | 5,346 | **8,248** |
+| `/find?remote=1` | 64 | 1,326 | 2,872 | 5,541 | 5,476 | **8,862** |
+| `/find?remote=1` | 256 | 1,313 | 2,873 | 5,522 | 4,987 | **8,052** |
+| `/fanout?remote=1` | 64 | 260 | 573 | 1,182 | 1,043 | **1,872** |
+| `/fanout?remote=1` | 256 | 265 | 587 | 1,238 | 745 | **1,325** |
 
 | 4 processes | Clients | Puma, 4 threads | Puma, 8 threads | Puma, 16 threads | Falcon + stock mongo | Falcon + mongo-async-pool |
 |---|--:|--:|--:|--:|--:|--:|
-| `/find` | 64 | 10,048 | 10,185 | 10,490 | 10,211 | **11,901** |
-| `/find` | 256 | 9,737 | 10,749 | 10,688 | 11,295 | **13,741** |
-| `/find?remote=1` | 64 | 2,619 | 5,099 | 9,275 | 9,090 | **9,908** |
-| `/find?remote=1` | 256 | 2,627 | 5,593 | 10,017 | 10,097 | **11,387** |
-| `/fanout?remote=1` | 64 | 526 | 949 | 1,778 | 1,989 | **2,473** |
-| `/fanout?remote=1` | 256 | 527 | 1,130 | 2,116 | 2,082 | **2,476** |
+| `/find` | 64 | 13,485 | 13,747 | 13,518 | 14,957 | **19,253** |
+| `/find` | 256 | 13,429 | 13,975 | 14,083 | 16,502 | **24,604** |
+| `/find?remote=1` | 64 | 5,974 | 10,776 | 12,650 | 12,268 | **14,322** |
+| `/find?remote=1` | 256 | 5,993 | 11,081 | 13,482 | 14,082 | **20,426** |
+| `/fanout?remote=1` | 64 | 1,220 | 2,297 | 2,958 | 2,855 | **3,697** |
+| `/fanout?remote=1` | 256 | 1,217 | 2,296 | 3,005 | 2,783 | **4,139** |
 
-`/find` is one indexed query against the local database; `?remote=1` adds 5ms
-to every database round trip (a database farther away than localhost), and
-`/fanout` runs 5 queries per request, concurrently in fibers under Falcon and
-one after another under Puma.
+`/find` is one indexed query against the local database; `?remote=1` adds 2ms
+to every database round trip (a fast query on a database in another
+availability zone; see [Database distance](#database-distance) for 1 and 5ms),
+and `/fanout` runs 5 queries per request, concurrently in fibers under Falcon
+and one after another under Puma.
 
-- **Puma's throughput is capped by its threads when queries wait on the
-  network.** With the database 5ms away, one Puma process serves about 620,
-  1,340 or 2,800 req/s with 4, 8 or 16 threads, however many clients are
-  waiting. One Falcon + mongo-async-pool process serves 7,300–7,650 (2.6–2.7× a
-  16-thread Puma), and with five queries per request 2.8–2.9× as many.
+- **On one process, Falcon + mongo-async-pool serves 36–60% more requests than
+  the best Puma configuration** from 64 to 256 clients, on the local database
+  and with it 2ms away, with a lower p99 (37ms against 49ms at 256 clients,
+  2ms away). At 2ms, 16 threads are enough to keep one Puma process busy: it's
+  limited by CPU (the GVL), at about 5,500 req/s, close to its 5,900–6,100 on
+  the local database. With 4 or 8 threads it's limited by its threads, at about
+  1,300 and 2,900 req/s however many clients are waiting.
 - **Fibers alone aren't enough.** Falcon with the stock driver gets past
-  Puma's thread cap too, but falls off as load grows, with tail latency
-  measured in hundreds of milliseconds to seconds (p99 317ms at 256 clients
-  against 40ms with mongo-async-pool, one process, 5ms away).
-- **On a local database, the work is CPU-bound** and Puma's thread count barely
-  matters. One Falcon + mongo-async-pool process serves 37–58% more requests than
-  the best Puma configuration from 16 to 256 clients; four processes serve
-  13–28% more on about 40% of the CPU (2.3–2.7 cores against 5.1–6.5).
-- **At four processes, with the database 5ms away**, Falcon + mongo-async-pool
-  serves 7–22% more requests than a 16-thread Puma (64 connections in all) from
-  64 clients up, on about half its CPU (2.1–2.4 cores against 3.7–4.6); Puma
-  with 8 or 4 threads serves about a half or a quarter as many.
+  Puma's thread cap, but falls off as load grows, with tail latency measured
+  in hundreds of milliseconds to seconds (p99 124ms at 256 clients, 2ms away,
+  against 37ms with mongo-async-pool; 1.2s at 1,024 clients on the local
+  database).
+- **At four processes, Falcon + mongo-async-pool serves 40–75% more than the
+  best Puma configuration on the local database, and 13–52% more with it 2ms
+  away**, from 64 clients up, on half to three quarters of the CPU (2.6–3.9
+  cores against 5.0–5.4) and with a p99 as low or lower.
+- **Five queries per request**, run concurrently in fibers, take 3.8ms
+  (median, 1 client) against 20–22ms one after another on Puma. Under load,
+  four Falcon processes serve 23–38% more than Puma from 64 clients up, and one
+  serves 58% more at 64 clients. At 256 clients one process is about level with
+  Puma: with 1,280 queries waiting for 64 connections it spends more of its
+  time in GC, and varied between 1,300 and 1,700 req/s across runs.
 - **One Falcon process has limits**: it takes every request at once, each in a
   fiber, on one core, so at 1,024 clients a single process falls behind Puma
-  on the local database (4,497 against 5,584 req/s). With four processes it
+  on the local database (5,385 against 5,920 req/s). With four processes it
   stays ahead. Run several Falcon workers, as you would Puma workers.
-- **Tail latency at four processes** is comparable to Puma's at 64 and 1,024
-  clients, but at 256 clients Falcon's p99 was higher in this run (46ms
-  against 34–40ms on `/find`; 77ms against 33ms with the database 5ms away,
-  which reran at 34–40ms against 29–37ms), though its median was lower (18ms
-  against 25ms; 20ms against 26ms). That's the database, not the server: 64
-  connections per worker let four Falcon processes drive this MongoDB to its
-  limit, where about 74 queries are in flight in MongoDB at once (6 under
-  Puma), and they queue there while it uses about 10 cores. With 16
-  connections per worker, the same 64 in all as Puma, Falcon serves 21% more
-  than Puma with a lower p99 (12,745 req/s at 29.5ms against 10,527 at
-  37.6ms) and less than half the database CPU. See
-  [Sizing the connection pool](#sizing-the-connection-pool).
-- **Where the gains come from** (one process, `/find`, 256 clients): the socket
-  extension alone takes Falcon from 4,690 to 7,001 req/s, the pool alone cuts
-  p99 from 126ms to 72ms, and together they give 7,536 req/s at 41ms p99.
-- Around 13,000–14,000 req/s the local MongoDB is the limit; without a
-  database (`/ping`), four Falcon processes serve about 150,000 req/s against
-  Puma's 88,000.
+- **Where the gains come from** (one process, `/find`, 256 clients): the
+  socket extension alone takes Falcon from 5,346 to 7,700 req/s, the pool alone
+  cuts p99 from 96ms to 69ms, and together they give 8,248 req/s at 38ms p99.
+  With five queries per request, the socket extension alone serves the most
+  (1,498 against 1,325 req/s), but with a p99 of 358ms against 228ms.
+- **Warm up, or size the heap.** The numbers are measured after a warmup at
+  1,024 clients. With many requests in flight, each GC scans every fiber's
+  stack, so until the heap has grown, one Falcon + mongo-async-pool process
+  spends much of its time collecting: at 256 clients it served about 5,800
+  req/s on `/find` before the heap had grown, against 8,200 after (pre-sizing
+  it with `RUBY_GC_HEAP_0_INIT_SLOTS` and friends does the same). Puma and
+  Falcon with the stock driver weren't affected.
+- Without a database (`/ping`), one Falcon process serves about 48,000–51,000
+  req/s against Puma's 38,000–39,000, and four about 154,000 against
+  91,000–93,000.
+
+### Database distance
+
+How much the async pool helps depends on how long each query keeps the app
+waiting: the network round trip (within a cloud region, about 0.1–0.5ms inside
+an availability zone and 0.5–2ms across zones) plus however long the query
+runs. Your APM's median query duration is a good estimate. Requests/s on
+`/find?remote=1` at 256 clients, with 1, 2 and 5ms added to each round trip:
+
+| | Processes | 1ms | 2ms | 5ms |
+|---|--:|--:|--:|--:|
+| Puma, 16 threads | 1 | 5,590 | 5,522 | 2,636 |
+| Falcon + stock mongo | 1 | 4,948 | 4,987 | 4,981 |
+| Falcon + mongo-async-pool | 1 | **7,718** | **8,052** | **7,906** |
+| Puma, 16 threads | 4 | 13,761 | 13,482 | 10,754 |
+| Falcon + stock mongo | 4 | 15,798 | 14,082 | 15,204 |
+| Falcon + mongo-async-pool | 4 | **23,546** | **20,426** | **21,130** |
+
+Up to about 2ms, 16 threads keep Puma busy and the GVL is its limit; at 5ms the
+threads are, and one process serves half as much. Falcon's 64 connections per
+process cover the wait at every distance, so Falcon + mongo-async-pool serves
+38–46% more than Puma on one process at 1–2ms and 3.0× as much at 5ms, and
+52–96% more on four processes.
 
 ### Same number of connections
 
 With the same number of database connections per process (Puma with a thread
 per connection), the database concurrency is equal and the difference is
-fibers and the driver. Requests/s at 256 clients, Puma → Falcon + mongo-async-pool:
+fibers and the driver. Requests/s at 256 clients, database 2ms away for
+`remote`, Puma → Falcon + mongo-async-pool:
 
 | Connections per process | `/find`, 1 process | `/find?remote=1`, 1 process | `/fanout?remote=1`, 1 process | `/find?remote=1`, 4 processes |
 |--:|--:|--:|--:|--:|
-| 4 | 5,423 → **6,610** | **620** → 560 | **123** → 109 | **2,627** → 2,545 |
-| 8 | 5,493 → **6,962** | **1,321** → 1,233 | **264** → 231 | **5,593** → 5,406 |
-| 16 | 5,399 → **7,050** | **2,806** → 2,593 | **536** → 451 | 10,017 → **10,495** |
-| 64 | 5,399 → **7,536** | 5,081 → **7,302** | 1,275 → **1,492** | 9,181 → **11,387** |
+| 4 | 5,704 → **7,908** | **1,313** → 1,204 | **265** → 236 | 5,993 → **6,039** |
+| 8 | 6,024 → **8,303** | **2,873** → 2,806 | **587** → 483 | 11,081 → **11,342** |
+| 16 | 6,087 → **8,164** | 5,522 → **5,850** | **1,238** → 992 | 13,482 → **16,162** |
+| 64 | 5,556 → **8,248** | 5,093 → **8,052** | **1,441** → 1,325 | 11,792 → **20,426** |
 
 - **CPU-bound work is faster on Falcon + mongo-async-pool at every pool size**:
-  22–40% on one process and 9–37% on four, at 256 clients.
-- **When the connections are the limit, it's close to a tie**: with 4–16
-  connections and the database 5ms away, throughput is about connections ÷
-  round trip on either server, and Puma is level or slightly ahead (by up to
-  16% with five queries per request on one process), with Falcon using the
-  same CPU or less.
+  34–48% on one process and 12–84% on four, at 256 clients.
+- **When the connections are the limit, it's close to a tie**: with 4 or 8
+  connections and the database 2ms away, throughput is about connections ÷
+  round trip on either server, within 9% of each other, with Falcon using less
+  CPU. With five queries per request on one process, Falcon serves 11–20% less
+  than Puma at 4–16 connections.
 - **The difference is what more connections cost.** For Puma each one is a
-  thread, and at 64 threads one process is held back by the GVL: 5,081 req/s
-  on 1.3 cores, against Falcon's 7,302 on 1.0 core (44% more); at four
-  processes, 9,181 req/s on 6.4 cores against 11,387 on 2.1. Fibers make
-  connections cheap, so Falcon can run enough of them to keep up with a
-  database that's a few milliseconds away.
+  thread, and at 64 threads one process is no faster than at 16 (5,093 req/s
+  against 5,522, on 1.2 cores), against Falcon's 8,052 on 1.0 core (58% more);
+  at four processes, 11,792 req/s on 5.5 cores against 20,426 on 3.2 (73%
+  more). Fibers make connections cheap, so Falcon can run enough of them to
+  keep up with a database that's a few milliseconds away.
 
-Numbers vary between runs by a few percent; the report has every
+Numbers vary between runs by a few percent, and by up to about 10% for one
+Falcon process with many requests in flight; the report has every
 measurement, including p50/p90/p99 latency, CPU and memory.
 
 ## Sizing the connection pool
@@ -253,14 +283,16 @@ so `max_pool_size` is that limit, and it should be sized for the database
 rather than for the number of clients:
 
 - Each process needs about **queries per second × query round trip**
-  connections: a process doing 2,000 queries/s against a database 5ms away
-  keeps about 10 busy; on localhost at 0.5ms, about 1.
+  connections: a process doing 2,000 queries/s against a database 2ms away
+  keeps about 4 busy; at 5ms, about 10; on localhost at 0.5ms, about 1.
 - Leave headroom for bursts, but more connections than the database can serve
   at once don't add throughput. They queue inside the database, raising its
-  CPU and your tail latency. In the benchmarks, four Falcon processes with 64
-  connections each kept about 74 queries in flight in a local MongoDB and used
-  about 10 of its cores; with 16 each, they served only 8% fewer requests on
-  less than half the database CPU, with a lower p99.
+  CPU and your tail latency. In the benchmarks (`/find`, 256 clients), four
+  Falcon processes with 64 connections each kept about 40 queries in flight in
+  a local MongoDB and used about 17 of its cores; with 16 each, they served
+  about 15% fewer requests with 8 in flight, on 9.5 cores and with a lower p99
+  (21ms against 26ms), still 47% more than four 16-thread Puma processes (2
+  in flight, 2.7 cores).
 - Count connections across all processes and servers: that total is what the
   database sees.
 - The driver's default `max_pool_size` is 20 per server; requests beyond it

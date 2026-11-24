@@ -5,7 +5,7 @@
 #   MONGODB_URI        Database to use (default mongodb://localhost:27017/mongo_async_pool_bench).
 #   MONGODB_REMOTE_URI The same database through bench/latency_proxy.rb, for ?remote=1.
 #   MONGO_POOL_SIZE    max_pool_size for each server (default 16).
-#   MONGO_ASYNC_POOL        "1" to install mongo-async-pool, "pool" or "socket" to install only that part.
+#   MONGO_ASYNC_POOL   "1" to install mongo-async-pool, "pool" or "socket" to install only that part.
 #   SERVER_MODEL       Label returned by /stats ("puma", "falcon", ...).
 
 Warning[:experimental] = false

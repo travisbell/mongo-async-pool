@@ -4,9 +4,9 @@
 # and Falcon (fibers), with and without mongo-async-pool, and writes a JSON + HTML
 # report. See bench/README.md.
 #
-#   bundle exec ruby bench/run.rb                       # the default suite (~50 minutes)
+#   bundle exec ruby bench/run.rb                       # the default suite (~35 minutes)
 #   bundle exec ruby bench/run.rb --quick               # short runs
-#   bundle exec ruby bench/run.rb --suites concurrency,connections,attribution,ceiling
+#   bundle exec ruby bench/run.rb --suites concurrency,connections,latency,attribution,ceiling
 #   bundle exec ruby bench/run.rb --servers puma-4x5,falcon-2 --scenarios remote --concurrency 64,256
 
 Warning[:experimental] = false
@@ -31,7 +31,6 @@ module Bench
   class Server
     FAMILIES = {
       "puma" => { label: "Puma + stock mongo", mongo_async_pool: "0" },
-      "puma-mongo-async-pool" => { label: "Puma + mongo-async-pool installed", mongo_async_pool: "1" },
       "falcon" => { label: "Falcon + mongo-async-pool", mongo_async_pool: "1" },
       "falcon-stock" => { label: "Falcon + stock mongo", mongo_async_pool: "0" },
       "falcon-pool-only" => { label: "Falcon + mongo-async-pool pool only", mongo_async_pool: "pool" },
@@ -42,11 +41,11 @@ module Bench
     # gets one per thread.
     FALCON_POOL_SIZE = 64
 
-    PATTERN = /\A(?<family>puma(?:-mongo-async-pool)?)-(?<workers>\d+)x(?<threads>\d+)(?:-pool(?<pool>\d+))?\z|\A(?<family>falcon(?:-stock|-pool-only|-socket-only)?)-(?<workers>\d+)(?:-pool(?<pool>\d+))?\z/
+    PATTERN = /\A(?<family>puma)-(?<workers>\d+)x(?<threads>\d+)(?:-pool(?<pool>\d+))?\z|\A(?<family>falcon(?:-stock|-pool-only|-socket-only)?)-(?<workers>\d+)(?:-pool(?<pool>\d+))?\z/
 
     class << self
       def parse(name, pool_size:)
-        match = PATTERN.match(name) or raise ArgumentError, "Unknown server #{name.inspect} (e.g. puma-1x16, puma-mongo-async-pool-4x5, falcon-1, falcon-1-pool16, falcon-stock-2, falcon-pool-only-1, falcon-socket-only-1)"
+        match = PATTERN.match(name) or raise ArgumentError, "Unknown server #{name.inspect} (e.g. puma-1x16, puma-4x5-pool8, falcon-1, falcon-1-pool16, falcon-stock-2, falcon-pool-only-1, falcon-socket-only-1)"
         pool_size = Integer(match[:pool]) if match[:pool]
         new(name, match[:family], Integer(match[:workers]), match[:threads] && Integer(match[:threads]), pool_size)
       end
@@ -63,7 +62,7 @@ module Bench
     end
 
     def puma?
-      @family.start_with?("puma")
+      @family == "puma"
     end
 
     # Puma gets one pooled connection per thread unless --pool-size says otherwise.
@@ -101,10 +100,17 @@ module Bench
   class Runner
     ROOT = File.expand_path("..", __dir__)
 
+    # Every scenario is warmed up with at least this many clients, so each
+    # server has grown its heap to the same peak before it's measured, whatever
+    # levels a run measures. Falcon's throughput with many requests in flight
+    # depends on it: each GC scans every live fiber's stack, and with the
+    # default heap it collects far more often.
+    WARMUP_CONCURRENCY = 1024
+
+    # LATENCY in a description stands for the latency added to each database round trip.
     SCENARIOS = {
       "ping" => { path: "/ping", description: "no database: the HTTP server and load generator ceiling" },
       "find" => { path: "/find", description: "one indexed find_one per request" },
-      "fanout" => { path: "/fanout", description: "#{FANOUT} find_ones per request (concurrent under Falcon, sequential under Puma)" },
       "remote" => { path: "/find?remote=1", description: "one find_one per request, with LATENCY added to each database round trip" },
       "remote_fanout" => { path: "/fanout?remote=1", description: "#{FANOUT} find_ones per request (concurrent under Falcon, sequential under Puma), with LATENCY added to each database round trip" }
     }.freeze
@@ -133,6 +139,15 @@ module Bench
         scenarios: ["find", "remote", "remote_fanout"],
         concurrency: [64, 256]
       },
+      "latency" => {
+        title: "Database distance",
+        description: "The same setups with 1, 2 and 5ms added to each database round trip, at 256 clients. " \
+          "Waiting on the database holds a Puma thread, so the farther away the database is (or the longer its queries take), the more threads Puma needs to keep up.",
+        servers: ["puma-1x16", "falcon-stock-1", "falcon-1", "puma-4x16", "falcon-stock-4", "falcon-4"],
+        scenarios: ["remote", "remote_fanout"],
+        concurrency: [256],
+        latencies: [1.0, 2.0, 5.0]
+      },
       "attribution" => {
         title: "Where the gains come from",
         description: "One Falcon process with neither, either or both parts of mongo-async-pool installed.",
@@ -154,7 +169,7 @@ module Bench
       duration: 10.0,
       warmup: 3.0,
       pool_size: nil,
-      latency_ms: 5.0,
+      latency_ms: 2.0,
       load_processes: 4,
       yjit: true,
       uri: ENV.fetch("MONGODB_URI", "mongodb://localhost:27017/mongo_async_pool_bench")
@@ -173,8 +188,10 @@ module Bench
       @environment = environment
       puts header
 
-      with_latency_proxy do
-        plan.each { |server, measurements| benchmark(server, measurements) }
+      plan.each do |latency, servers|
+        with_latency_proxy(latency, servers) do
+          servers.each { |server, measurements| benchmark(server, measurements, latency) }
+        end
       end
 
       data = { environment: @environment, suites: @suites, results: @results }
@@ -202,19 +219,31 @@ module Bench
       @options[:suites].to_h { |name| [name, SUITES.fetch(name)] }
     end
 
-    # Each server runs once, measuring everything any suite needs from it.
+    # One pass per added latency (the proxy's delay is fixed), each server
+    # starting once per pass and measuring everything any suite needs from it.
+    # The first pass is at the default latency, along with everything local.
+    #
+    # @returns [Array] [latency, [[Server, [[scenario, concurrency], ...]], ...]] pairs.
     def plan
-      measurements = Hash.new { |hash, key| hash[key] = [] }
+      passes = Hash.new { |hash, latency| hash[latency] = Hash.new { |servers, name| servers[name] = [] } }
+      default = @options[:latency_ms]
 
       @suites.each_value do |suite|
         suite[:servers].each do |name|
-          suite[:scenarios].each do |scenario|
-            suite[:concurrency].each { |concurrency| measurements[name] |= [[scenario, concurrency]] }
+          suite[:scenarios].product(suite[:concurrency]).each do |scenario, concurrency|
+            latencies = remote?(scenario) ? suite.fetch(:latencies, [default]) : [default]
+            latencies.each { |latency| passes[Float(latency)][name] |= [[scenario, concurrency]] }
           end
         end
       end
 
-      measurements.map { |name, list| [Server.parse(name, pool_size: @options[:pool_size]), list] }
+      passes.sort_by { |latency, _| [latency == default ? 0 : 1, latency] }.map do |latency, servers|
+        [latency, servers.map { |name, list| [Server.parse(name, pool_size: @options[:pool_size]), list] }]
+      end
+    end
+
+    def remote?(scenario)
+      scenario.start_with?("remote")
     end
 
     # Up to 1024 clients plus the servers' database connections need more open
@@ -242,18 +271,18 @@ module Bench
       end
     end
 
-    def benchmark(server, measurements)
+    def benchmark(server, measurements, latency)
       port = free_port
 
       puts
-      puts "== #{server.label}"
+      puts "== #{server.label}#{", #{format("%g", latency)}ms away" if measurements.any? { |scenario, _| remote?(scenario) }}"
 
       with_server(server, port) do |pgid|
         measurements.group_by(&:first).each do |scenario, list|
           url = "http://127.0.0.1:#{port}#{SCENARIOS.fetch(scenario)[:path]}"
           concurrencies = list.map(&:last).sort
 
-          load_test(url, concurrencies.max, @options[:warmup]) if @options[:warmup] > 0
+          load_test(url, [concurrencies.max, WARMUP_CONCURRENCY].max, @options[:warmup]) if @options[:warmup] > 0
 
           concurrencies.each do |concurrency|
             cpu_before = cpu_seconds(pgid)
@@ -265,6 +294,7 @@ module Bench
               server: server.name,
               scenario: scenario,
               concurrency: concurrency,
+              added_latency_ms: (latency if remote?(scenario)),
               rps: result["rps"],
               latency_ms: result["latency_ms"],
               requests: result["requests"],
@@ -312,13 +342,14 @@ module Bench
       stop(pid) if pid
     end
 
-    # Starts bench/latency_proxy.rb in front of the database, for the remote scenarios.
-    def with_latency_proxy
-      return yield unless @suites.each_value.any? { |suite| suite[:scenarios].any? { |scenario| scenario.start_with?("remote") } }
+    # Starts bench/latency_proxy.rb in front of the database for the remote
+    # scenarios, delaying every reply by `latency` milliseconds.
+    def with_latency_proxy(latency, servers)
+      return yield unless servers.any? { |_, measurements| measurements.any? { |scenario, _| remote?(scenario) } }
 
       address = mongo_client.cluster.servers.first.address
       port = free_port
-      pid = Process.spawn({ "RUBY_YJIT_ENABLE" => "1" }, RbConfig.ruby, File.join(__dir__, "latency_proxy.rb"), port.to_s, "#{address.host}:#{address.port}", @options[:latency_ms].to_s, out: File::NULL)
+      pid = Process.spawn({ "RUBY_YJIT_ENABLE" => "1" }, RbConfig.ruby, File.join(__dir__, "latency_proxy.rb"), port.to_s, "#{address.host}:#{address.port}", latency.to_s, out: File::NULL)
 
       # directConnection, so the driver doesn't discover (and connect directly to) replica set members.
       @remote_uri = "mongodb://127.0.0.1:#{port}/#{mongo_client.database.name}?directConnection=true"
@@ -444,9 +475,10 @@ module Bench
         falcon: gem_version("falcon"),
         duration: @options[:duration],
         warmup: @options[:warmup],
+        warmup_concurrency: WARMUP_CONCURRENCY,
         latency_ms: @options[:latency_ms],
         load_processes: @options[:load_processes],
-        scenarios: SCENARIOS.transform_values { |scenario| scenario[:description].sub("LATENCY", "#{format("%g", @options[:latency_ms])}ms") },
+        scenarios: SCENARIOS.transform_values { |scenario| scenario[:description] },
         routes: SCENARIOS.transform_values { |scenario| scenario[:path] }
       }
     end
@@ -496,7 +528,7 @@ if $PROGRAM_NAME == __FILE__
     parser.on("--duration SECONDS", Float, "Duration of each run (default 10)") { |v| options[:duration] = v }
     parser.on("--warmup SECONDS", Float, "Warmup per server and scenario (default 3)") { |v| options[:warmup] = v }
     parser.on("--pool-size N", Integer, "max_pool_size per process (default: Puma's thread count, #{Bench::Server::FALCON_POOL_SIZE} for Falcon)") { |v| options[:pool_size] = v }
-    parser.on("--latency-ms N", Float, "Latency added to each database round trip in the remote scenarios (default 5)") { |v| options[:latency_ms] = v }
+    parser.on("--latency-ms N", Float, "Latency added to each database round trip in the remote scenarios (default 2; the latency suite also runs 1 and 5)") { |v| options[:latency_ms] = v }
     parser.on("--load-processes N", Integer, "Load generator processes (default 4)") { |v| options[:load_processes] = v }
     parser.on("--[no-]yjit", "Run the servers with YJIT (default on)") { |v| options[:yjit] = v }
     parser.on("--quick", "Short runs, for a smoke test") do

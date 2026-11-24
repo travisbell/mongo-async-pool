@@ -13,15 +13,13 @@ module Bench
     # Color follows the server family (never its position). The three main
     # families get the first three slots of a categorical palette, which pass
     # the color-vision-deficiency and contrast checks together in light and dark
-    # mode; variants (partial installs, Puma with mongo-async-pool installed) are
-    # shown in neutral gray and told apart by their labels, rather than adding
-    # hues that can't be distinguished.
+    # mode; partial installs are shown in neutral gray and told apart by their
+    # labels, rather than adding hues that can't be distinguished.
     FAMILY_SLOTS = {
       "puma" => "1",
       "falcon-stock" => "2",
       "falcon" => "3",
       "falcon-pool-only" => "neutral",
-      "puma-mongo-async-pool" => "neutral",
       "falcon-socket-only" => "neutral"
     }.freeze
 
@@ -29,18 +27,8 @@ module Bench
       "puma" => "Puma + stock mongo",
       "falcon-stock" => "Falcon + stock mongo",
       "falcon" => "Falcon + mongo-async-pool",
-      "puma-mongo-async-pool" => "Puma + mongo-async-pool installed",
       "falcon-pool-only" => "Falcon + mongo-async-pool pool only",
       "falcon-socket-only" => "Falcon + mongo-async-pool socket only"
-    }.freeze
-
-    # Each scenario's route (for results that predate the runner recording them).
-    ROUTES = {
-      "ping" => "/ping",
-      "find" => "/find",
-      "fanout" => "/fanout",
-      "remote" => "/find?remote=1",
-      "remote_fanout" => "/fanout?remote=1"
     }.freeze
 
     # Scenarios that don't touch the database: the connection pool is irrelevant,
@@ -59,7 +47,10 @@ module Bench
     def initialize(data)
       @environment = data.fetch("environment")
       @suites = data.fetch("suites")
-      @results = data.fetch("results")
+      # Everything but the latency suite is at the default latency; the latency
+      # suite's other latencies stay out of the rest of the report.
+      @all_results = data.fetch("results")
+      @results = @all_results.select { |r| r["added_latency_ms"].nil? || r["added_latency_ms"] == @environment["latency_ms"] }
       @chart_id = 0
     end
 
@@ -211,6 +202,7 @@ module Bench
 
     # A few concurrency levels: bars per level, one row per metric.
     def scenario_block(suite, scenario)
+      return latency_block(suite, scenario) if suite["latencies"]
       return sweep_block(suite, scenario) if suite["concurrency"].size >= SWEEP_POINTS
 
       rows = suite_rows(suite, scenario)
@@ -244,18 +236,50 @@ module Bench
       charts = metrics.flat_map do |title, metric, scale, unit|
         process_counts.map do |workers|
           servers = suite["servers"].select { |server| rows.any? { |r| r["server"] == server && r["workers"] == workers } }
-          line_chart("#{title} · #{process_label(workers)}", servers, scenario, suite["concurrency"], metric, scale: scale, unit: unit)
+          line_chart("#{title} · #{process_label(workers)}", servers, suite["concurrency"], metric, scale: scale, unit: unit, axis: clients_axis) do |server, concurrency|
+            row(server, scenario, concurrency)
+          end
         end
       end
 
       scenario_article(scenario, legend(rows, detailed: false), charts, rows)
     end
 
-    def scenario_article(scenario, legend, charts, rows)
+    # A latency sweep at one concurrency level: lines by added latency, one
+    # row per metric and one column per process count.
+    def latency_block(suite, scenario)
+      concurrency = suite["concurrency"].max
+      latencies = suite["latencies"]
+      rows = suite["servers"].flat_map { |server| latencies.filter_map { |latency| latency_row(server, scenario, concurrency, latency) } }
+      process_counts = rows.map { |r| r["workers"] }.uniq.sort
+      metrics = [
+        ["Requests per second", ->(r) { r["rps"] }, :linear, "req/s"],
+        ["p99 latency", ->(r) { r.dig("latency_ms", "p99") }, :log, "ms"]
+      ]
+      axis = {
+        title: "latency added to each database round trip",
+        label: ->(latency) { ms_label(latency) },
+        tip: ->(latency) { "#{ms_label(latency)} away · #{number(concurrency)} clients" }
+      }
+
+      charts = metrics.flat_map do |title, metric, scale, unit|
+        process_counts.map do |workers|
+          servers = suite["servers"].select { |server| rows.any? { |r| r["server"] == server && r["workers"] == workers } }
+          line_chart("#{title} · #{process_label(workers)}", servers, latencies, metric, scale: scale, unit: unit, axis: axis) do |server, latency|
+            latency_row(server, scenario, concurrency, latency)
+          end
+        end
+      end
+
+      latencies_text = "#{latencies.map { |latency| format("%g", latency) }.then { |values| values.size > 1 ? "#{values[0..-2].join(", ")} and #{values.last}" : values.first }}ms"
+      scenario_article(scenario, legend(rows, detailed: false), charts, rows, latency: latencies_text)
+    end
+
+    def scenario_article(scenario, legend, charts, rows, latency: latency_label)
       <<~HTML
         <article class="scenario">
           <h3><code class="route">#{h(route(scenario))}</code></h3>
-          <p class="scenario-description">#{h(@environment.dig("scenarios", scenario).to_s)}</p>
+          <p class="scenario-description">#{h(@environment.dig("scenarios", scenario).to_s.sub("LATENCY", latency))}</p>
           #{legend}
           <div class="charts">#{charts.join}</div>
           #{table(rows)}
@@ -270,16 +294,16 @@ module Bench
         <section class="suite" id="method">
           <h2>Method</h2>
           <ul class="notes">
-            <li>Each server runs on its own, on a free port, with YJIT #{env["yjit"] ? "on" : "off"}. Every run lasts #{h(format("%g", env["duration"]))}s after a #{h(format("%g", env["warmup"]))}s warmup per scenario.</li>
+            <li>Each server runs on its own, on a free port, with YJIT #{env["yjit"] ? "on" : "off"}. Every run lasts #{h(format("%g", env["duration"]))}s, after a #{h(format("%g", env["warmup"]))}s warmup per scenario at #{h(number(env["warmup_concurrency"]))} clients (or the most measured, if more), so every server's heap has grown to the same peak first. Falcon + mongo-async-pool depends on that more than the others: with many requests in flight, each GC scans every live fiber's stack, and a process whose heap hasn't grown collects far more often.</li>
             <li>The load generator is closed-loop: N persistent HTTP/1.1 connections, each sending its next request when the previous response arrives (#{h(env["load_processes"])} processes, on the same machine). Every connection is opened before measuring starts, so the numbers are for serving requests, not for accepting a burst of new connections.</li>
             <li>Puma works on as many requests as it has threads and leaves the rest of the clients waiting in the kernel. Falcon takes every request at once, each in a fiber; with 1,024 clients on one process that's 1,024 fibers for the garbage collector to scan, which is part of why throughput per process falls off at that point.</li>
-            <li>Remote scenarios go through a proxy that delays every reply from the database by #{h(latency_label)}, simulating a database farther away than localhost.</li>
+            <li>Remote scenarios go through a proxy that delays every reply from the database by #{h(latency_label)}#{h(" (#{@suites["latency"]["latencies"].map { |latency| ms_label(latency) }.join(", ")} in the latency suite)") if @suites["latency"]}, simulating a database farther away than localhost, or queries that take longer to run: either way, time the app spends waiting.</li>
             <li>CPU is the server's total (all of its processes; 100% is one core) and memory is the resident size of all of its processes; Falcon runs a supervisor process next to its workers. Threads are per process, including the driver's monitoring threads.</li>
             <li>When queries wait on the network, throughput is capped at about <em>connections ÷ round trip</em> for any server; the Connections column is the total across processes.</li>
             <li>The database ran on the same machine, so at high request rates it, rather than the app server, can be the limit; <code>/ping</code> shows the ceiling without a database.</li>
             <li>“+ stock mongo” is the MongoDB driver as it ships; “+ mongo-async-pool” has mongo-async-pool installed. Servers are labeled with their configuration: worker processes, threads per worker (Puma) and <code>max_pool_size</code> per worker. Puma runs with 4, 8 or 16 threads and a connection per thread, as Ruby apps usually do, so its concurrency is its thread count; Falcon runs a fiber per request with 64 connections per process, so its concurrency is its connection pool. Puma's thread counts are told apart by shade and dash pattern, and the headline numbers compare against the best Puma configuration at each point.</li>
             <li>Line charts space the client counts evenly (each is 4× the last); latency is on a log scale.</li>
-            <li>Under Puma, threads limit how many queries run at once; under Falcon, the connection pool does. Four Falcon processes with 64 connections each can keep the local database at its limit (about 13,000–14,000 req/s here), where queries queue inside MongoDB and tail latency rises; fewer connections per process trade a little throughput for less database load and lower tail latency (see the README's “Sizing the connection pool”).</li>
+            <li>Under Puma, threads limit how many queries run at once; under Falcon, the connection pool does. Four Falcon processes with 64 connections each can keep the local database at its limit, where queries queue inside MongoDB and tail latency rises; fewer connections per process trade a little throughput for less database load and lower tail latency (see the README's “Sizing the connection pool”).</li>
           </ul>
           <dl class="env">
             #{env_rows}
@@ -310,10 +334,11 @@ module Bench
 
     # -- Charts --
 
-    # One line per server across the concurrency levels (evenly spaced: the
-    # default levels are powers of 4), with a marker at each measurement and a
-    # crosshair tooltip listing every server at the hovered level.
-    def line_chart(title, servers, scenario, levels, metric, scale:, unit:)
+    # One line per server across the levels on the x axis (evenly spaced: the
+    # default client counts are powers of 4), with a marker at each
+    # measurement and a crosshair tooltip listing every server at the hovered
+    # level. The block returns the measurement for a server at a level.
+    def line_chart(title, servers, levels, metric, scale:, unit:, axis:)
       width = 600
       height = 270
       left = 58
@@ -325,7 +350,7 @@ module Bench
       plot_bottom = top + plot_height
 
       series = servers.map do |server|
-        points = levels.map { |level| (r = row(server, scenario, level)) && [r, metric.(r)] }
+        points = levels.map { |level| (r = yield(server, level)) && [r, metric.(r)] }
         { server: server, row: points.compact.first&.first, points: points }
       end
       values = series.flat_map { |line| line[:points].compact.map(&:last) }.select { |v| v&.positive? }
@@ -348,9 +373,9 @@ module Bench
       svg << %(<line class="baseline" x1="#{left}" x2="#{width - right}" y1="#{plot_bottom}" y2="#{plot_bottom}"/>)
 
       levels.each_with_index do |level, i|
-        svg << %(<text class="axis-label" x="#{f(x.(i))}" y="#{plot_bottom + 18}" text-anchor="middle">#{h(number(level))}</text>)
+        svg << %(<text class="axis-label" x="#{f(x.(i))}" y="#{plot_bottom + 18}" text-anchor="middle">#{h(axis[:label].(level))}</text>)
       end
-      svg << %(<text class="axis-title" x="#{f(left + (plot_width / 2.0))}" y="#{height - 6}" text-anchor="middle">concurrent clients</text>)
+      svg << %(<text class="axis-title" x="#{f(left + (plot_width / 2.0))}" y="#{height - 6}" text-anchor="middle">#{h(axis[:title])}</text>)
 
       svg << %(<line class="crosshair" x1="0" x2="0" y1="#{top}" y2="#{plot_bottom}"/>)
 
@@ -373,7 +398,7 @@ module Bench
           slot = row_slot(point.first, shades: true)
           [slot, server_label(point.first), format_metric(point.last, unit), KEY_STYLES.fetch(DASHES[slot], "solid")]
         end
-        tip = { "title" => "#{number(level)} clients · #{title}", "rows" => rows }
+        tip = { "title" => "#{axis[:tip].(level)} · #{title}", "rows" => rows }
         label = ([tip["title"]] + rows.map { |_, name, value| "#{name}: #{value}" }).join(", ")
 
         x0 = [x.(i) - (band / 2), left].max
@@ -459,26 +484,6 @@ module Bench
       HTML
     end
 
-    def grid_y(ticks, x1, x2, top, plot_height, unit)
-      svg = +""
-
-      ticks.each do |tick|
-        y = top + plot_height - (tick.to_f / ticks.last * plot_height)
-        svg << %(<line class="grid" x1="#{x1}" x2="#{x2}" y1="#{f(y)}" y2="#{f(y)}"/>) unless tick.zero?
-        svg << %(<text class="axis-label" x="#{x1 - 8}" y="#{f(y + 4)}" text-anchor="end">#{h(axis_number(tick))}</text>)
-      end
-
-      svg << %(<text class="axis-title" x="#{x1 - 8}" y="#{top - 18}" text-anchor="end">#{h(unit)}</text>)
-      svg
-    end
-
-    # A column with a 4px rounded top and a square base.
-    def column_path(x, base, width, height)
-      radius = [4, width / 2.0, height].min
-      y = base - height
-      "M#{f(x)},#{f(base)}V#{f(y + radius)}Q#{f(x)},#{f(y)} #{f(x + radius)},#{f(y)}H#{f(x + width - radius)}Q#{f(x + width)},#{f(y)} #{f(x + width)},#{f(y + radius)}V#{f(base)}Z"
-    end
-
     # A bar with a 4px rounded end and a square base.
     def bar_path(x, y, length, height)
       radius = [4, height / 2.0, length].min
@@ -527,15 +532,17 @@ module Bench
     # -- Tables --
 
     def table(rows)
-      # By process count, then in the suite's server order (which pairs comparable servers), then by clients.
+      # Only the latency suite mixes latencies, and it has one concurrency level.
+      by_latency = rows.map { |r| r["added_latency_ms"] }.uniq.size > 1
+      # By process count, then in the suite's server order (which pairs comparable servers), then by clients or latency.
       order = rows.map { |r| r["server"] }.uniq
-      body = rows.sort_by { |r| [r["workers"].to_i, order.index(r["server"]), r["concurrency"]] }.map do |r|
+      body = rows.sort_by { |r| [r["workers"].to_i, order.index(r["server"]), by_latency ? r["added_latency_ms"] : r["concurrency"]] }.map do |r|
         latency = r["latency_ms"] || {}
 
         <<~HTML
           <tr>
             <th scope="row"><span class="swatch" style="background: var(--series-#{row_slot(r)})"></span>#{h(server_label(r))}</th>
-            <td>#{h(r["concurrency"])}</td>
+            <td>#{h(by_latency ? ms_label(r["added_latency_ms"]) : r["concurrency"])}</td>
             <td>#{h(number(r["rps"]))}</td>
             <td>#{h(decimal(latency["p50"]))}</td>
             <td>#{h(decimal(latency["p90"]))}</td>
@@ -554,7 +561,7 @@ module Bench
           <summary>Table</summary>
           <div class="table-scroll">
             <table>
-              <thead><tr><th scope="col">Server</th><th scope="col">Clients</th><th scope="col">Req/s</th><th scope="col">p50 ms</th><th scope="col">p90 ms</th><th scope="col">p99 ms</th><th scope="col">Errors</th><th scope="col">CPU</th><th scope="col">Memory MB</th><th scope="col">Connections</th><th scope="col">Threads/process</th></tr></thead>
+              <thead><tr><th scope="col">Server</th><th scope="col">#{by_latency ? "Added latency" : "Clients"}</th><th scope="col">Req/s</th><th scope="col">p50 ms</th><th scope="col">p90 ms</th><th scope="col">p99 ms</th><th scope="col">Errors</th><th scope="col">CPU</th><th scope="col">Memory MB</th><th scope="col">Connections</th><th scope="col">Threads/process</th></tr></thead>
               <tbody>#{body.join}</tbody>
             </table>
           </div>
@@ -575,13 +582,22 @@ module Bench
       @rows_index[[server, scenario, concurrency]]
     end
 
+    def latency_row(server, scenario, concurrency, latency)
+      @latency_index ||= @all_results.to_h { |r| [[r["server"], r["scenario"], r["concurrency"], r["added_latency_ms"]], r] }
+      @latency_index[[server, scenario, concurrency, latency.to_f]]
+    end
+
+    def clients_axis
+      { title: "concurrent clients", label: ->(clients) { number(clients) }, tip: ->(clients) { "#{number(clients)} clients" } }
+    end
+
     def route(scenario)
-      @environment.dig("routes", scenario) || ROUTES.fetch(scenario, scenario)
+      @environment.dig("routes", scenario) || scenario
     end
 
     # The family a measurement is shown as: without a database, it's just Puma or Falcon.
     def display_family(row)
-      family = row["family"] || family_of(row["server"])
+      family = row["family"]
       return family unless DATABASE_FREE.include?(row["scenario"])
 
       family.start_with?("puma") ? "puma" : "falcon-stock"
@@ -647,18 +663,6 @@ module Bench
       sweep_rows.select { |r| r["family"] == "puma" && r["workers"] == workers && r["scenario"] == scenario && r["concurrency"] == concurrency }.min_by(&score)
     end
 
-    def cores(row)
-      format("%.1f", row["cpu_percent"].to_f / 100)
-    end
-
-    def family_of(server)
-      FAMILY_SLOTS.keys.sort_by { |family| -family.length }.find { |family| server.start_with?("#{family}-") } || "puma"
-    end
-
-    def slot(server)
-      FAMILY_SLOTS.fetch(family_of(server))
-    end
-
     # Requests per second per core of CPU the server used.
     def per_core(row)
       cpu = row["cpu_percent"].to_f
@@ -666,7 +670,11 @@ module Bench
     end
 
     def latency_label
-      "#{format("%g", @environment["latency_ms"] || 0)}ms"
+      ms_label(@environment["latency_ms"] || 0)
+    end
+
+    def ms_label(value)
+      "#{format("%g", value)}ms"
     end
 
     def json_for_script
